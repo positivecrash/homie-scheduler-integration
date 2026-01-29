@@ -1,0 +1,22 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Homie Schedule",
+        "description": "Configure your smart home scheduler"
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Homie Schedule Settings",
+        "description": "Boiler auto turn off\n\nPrevents boiler from running too long",
+        "data": {
+          "boiler_entity": " ",
+          "boiler_time": "Time to turn off (0 = remove)"
+        }
+      }
+    }
+  }
+}

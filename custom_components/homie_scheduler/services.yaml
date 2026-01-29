@@ -1,0 +1,204 @@
+# Services for Homie Schedule integration
+
+set_items:
+  name: Set items
+  description: Set all schedule items at once
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    items:
+      name: Items
+      description: List of schedule items
+      required: true
+      selector:
+        object:
+
+add_item:
+  name: Add item
+  description: Add a new schedule item
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    entity_id:
+      name: Entity ID
+      description: The entity to control
+      required: true
+      selector:
+        entity:
+    time:
+      name: Time
+      description: Time in HH:MM format
+      required: true
+      selector:
+        text:
+    weekdays:
+      name: Weekdays
+      description: List of weekdays (0-6, where 0=Monday)
+      required: true
+      selector:
+        object:
+    duration:
+      name: Duration
+      description: Duration in minutes (optional)
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+    enabled:
+      name: Enabled
+      description: Whether the item is enabled
+      required: false
+      default: true
+      selector:
+        boolean:
+    service_start:
+      name: Service Start
+      description: Service to call when item starts
+      required: true
+      selector:
+        object:
+    service_end:
+      name: Service End
+      description: Service to call when item ends (optional)
+      required: false
+      selector:
+        object:
+
+update_item:
+  name: Update item
+  description: Update an existing schedule item
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    item_id:
+      name: Item ID
+      description: The ID of the item to update
+      required: true
+      selector:
+        text:
+    entity_id:
+      name: Entity ID
+      description: The entity to control
+      required: false
+      selector:
+        entity:
+    time:
+      name: Time
+      description: Time in HH:MM format
+      required: false
+      selector:
+        text:
+    weekdays:
+      name: Weekdays
+      description: List of weekdays (0-6, where 0=Monday)
+      required: false
+      selector:
+        object:
+    duration:
+      name: Duration
+      description: Duration in minutes
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+    enabled:
+      name: Enabled
+      description: Whether the item is enabled
+      required: false
+      selector:
+        boolean:
+    service_start:
+      name: Service Start
+      description: Service to call when item starts
+      required: false
+      selector:
+        object:
+    service_end:
+      name: Service End
+      description: Service to call when item ends
+      required: false
+      selector:
+        object:
+
+delete_item:
+  name: Delete item
+  description: Delete a schedule item
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    item_id:
+      name: Item ID
+      description: The ID of the item to delete
+      required: true
+      selector:
+        text:
+
+set_enabled:
+  name: Set enabled
+  description: Enable or disable the scheduler
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether the scheduler is enabled
+      required: true
+      selector:
+        boolean:
+
+toggle_enabled:
+  name: Toggle enabled
+  description: Toggle the scheduler enabled state
+  target:
+    entity:
+      domain: sensor
+      integration: homie_scheduler
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
