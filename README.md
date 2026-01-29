@@ -1,6 +1,6 @@
 # Homie Scheduler Integration
 
-Home Assistant custom integration for schedule management (switch/input_boolean/climate). Works together with **Homie Scheduler Cards** for the Lovelace UI.
+Home Assistant custom integration for schedule management (switch/input_boolean/climate). **For the Lovelace UI you need** [**Homie Scheduler Cards**](https://github.com/positivecrash/homie-scheduler-cards) — install them from HACS or the repo.
 
 ## Installation
 
@@ -23,7 +23,7 @@ Restart HA, then add the integration via **Settings** → **Devices & Services**
 
 ## Requirements
 
-- **Homie Scheduler Cards** (install from HACS or [repository](https://github.com/positivecrash/homie-scheduler-cards))
+- **[Homie Scheduler Cards](https://github.com/positivecrash/homie-scheduler-cards)** for the Lovelace UI (install from HACS or the repository)
 - Home Assistant 2025.9 or newer
 
 ## Documentation
