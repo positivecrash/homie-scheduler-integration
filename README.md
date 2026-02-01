@@ -26,18 +26,44 @@ Restart HA, then add the integration via **Settings** → **Devices & Services**
 - **[Homie Scheduler Cards](https://github.com/positivecrash/homie-scheduler-cards)** for the Lovelace UI (install from HACS or the repository)
 - Home Assistant 2025.9 or newer
 
-## Documentation
+## Services and entities
 
-- [Entities and services](https://github.com/positivecrash/homie-scheduler-integration#readme)
-- [Homie Scheduler Cards](https://github.com/positivecrash/homie-scheduler-cards) – Lovelace cards for this integration
+### Entities
 
-## Icon
+| Entity | Entity ID | Type | Description |
+|--------|-----------|------|-------------|
+| **Scheduler Info** | `sensor.homie_schedule_scheduler_info` | sensor | Bridge sensor used by Lovelace cards. Attributes: `entry_id`, `items`, `entity_next_runs`, `entity_next_transitions`, `active_buttons`, `max_runtime_turn_off_times`, `entity_max_runtime`. Per-entity data for all cards. |
+| **Schedule Enabled** | `switch.homie_schedule_schedule_enabled` | switch | Toggle to enable or disable the scheduler. |
 
-To show the custom icon in HA: add the icon to [home-assistant/brands](https://github.com/home-assistant/brands) (see [info.md](info.md)).
+### Services
 
-## Publishing to GitHub (first time)
+| Service | Description | Main fields |
+|---------|-------------|-------------|
+| **set_items** | Replace all schedule items at once. | `entry_id`, `items` |
+| **add_item** | Add a new schedule slot. | `entry_id`, `entity_id`, `time`, `weekdays`, `duration`, `service_start`, `service_end`, `enabled` |
+| **update_item** | Update an existing slot. | `entry_id`, `item_id`, plus optional `entity_id`, `time`, `weekdays`, `duration`, `enabled`, `service_start`, `service_end` |
+| **delete_item** | Remove a schedule slot. | `entry_id`, `item_id` |
+| **set_enabled** | Enable or disable the scheduler. | `entry_id`, `enabled` |
+| **toggle_enabled** | Toggle scheduler on/off. | `entry_id` |
+| **set_active_button** | Mark a "RUN FOR" button as active (used by button card). | `entry_id`, `entity_id`, `button_id`, `timer_end`, `duration` |
+| **clear_active_button** | Clear active button when entity turns off. | `entry_id`, `entity_id` |
 
-1. On GitHub create a new **empty** repository (e.g. `homie-scheduler-integration`); do not add README or .gitignore.
+All services are in domain `homie_scheduler`. Cards use these services internally; manual calls are rarely needed.
+
+**How to find `entry_id`:** Open **Developer Tools** → **States**, find `sensor.homie_schedule_scheduler_info`, look at the attribute `entry_id` (e.g. `a1b2c3d4e5f6g7h8...`).
+
+### Options and config updates
+
+The integration does **not** register an `OptionsUpdateListener` (`entry.add_update_listener`). Changes to options (e.g. `entity_max_runtime`, schedule items, enabled flag) are applied only when:
+
+- A **service** updates options and then calls `coordinator.async_reload()` (e.g. `set_items`, `set_active_button`, `clear_active_button`, `update_item`, etc.), or  
+- You **reload the integration** manually (Devices & Services → Homie Schedule → Reload) or restart Home Assistant.
+
+So after editing options in the integration config screen, you must **reload the integration** (or restart HA) for the new options to take effect. This is intentional: it avoids an automatic full reload on every options save and keeps behavior predictable.
+
+## Publishing to GitHub
+
+1. On GitHub create an **empty** repository (e.g. `homie-scheduler-integration`); do not add README or .gitignore.
 2. In the project folder (if this folder is inside another git repo, use a separate copy or a new clone so this project is the only content):
 
 ```bash

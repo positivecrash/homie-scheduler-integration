@@ -68,15 +68,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to start coordinator: %s", e, exc_info=True)
             # Continue anyway - coordinator might still work partially
 
-        # Register update listener for options changes
-        async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
-            """Handle options update."""
-            _LOGGER.debug("Options updated, reloading coordinator")
-            coordinator = hass.data[DOMAIN].get(entry.entry_id)
-            if coordinator:
-                await coordinator.async_reload()
-        
-        entry.async_on_unload(entry.add_update_listener(async_update_options))
+        # No entry.add_update_listener (OptionsUpdateListener): options changes (e.g. entity_max_runtime,
+        # items, enabled) are applied only when services or config flow call config_entries.async_update_entry
+        # and then coordinator.async_reload(). This is intentional: we avoid automatic full reload on every
+        # options save; services (set_items, set_active_button, etc.) call async_reload() after updating
+        # options so the coordinator picks up new values. See README "Options and config updates".
 
         _LOGGER.info("Scheduler entry %s setup completed", entry.entry_id)
         return True

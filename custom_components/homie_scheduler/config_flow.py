@@ -101,6 +101,7 @@ class SchedulerOptionsFlow(config_entries.OptionsFlow):
             
             _LOGGER.warning(f"[CONFIG_FLOW] Final entity_max_runtime: {entity_max_runtime}")
             
+            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data=new_options)
 
         # Get fresh entry data when showing form
@@ -140,7 +141,7 @@ class SchedulerOptionsFlow(config_entries.OptionsFlow):
                 min=0,
                 max=1440,
                 mode=NumberSelectorMode.BOX,
-                step=5,
+                step=1,
                 unit_of_measurement="minutes"
             )
         )

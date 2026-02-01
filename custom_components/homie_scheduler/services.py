@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Any
 import uuid
 
@@ -20,7 +21,9 @@ from .const import (
     ATTR_ITEMS,
     ATTR_TIME,
     ATTR_WEEKDAYS,
+    CONF_DEFAULT_DURATION,
     CONF_ENTITY_MAX_RUNTIME,
+    DEFAULT_DURATION,
     DOMAIN,
     ITEM_DURATION,
     ITEM_ENTITY_ID,
@@ -220,7 +223,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Validate items and set default duration if not provided
@@ -295,8 +302,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found in hass.data[%s]", entry_id, DOMAIN)
-                _LOGGER.debug("Available entries: %s", list(hass.data.get(DOMAIN, {}).keys()))
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Get duration from call data (optional - if not provided, slot will run indefinitely)
@@ -412,7 +422,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Get current items
@@ -498,7 +512,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             new_options = {**entry.options, "items": items}
             hass.config_entries.async_update_entry(entry, options=new_options)
             
-            # Soft update: reload coordinator without full entry reload
+            # Soft update: only recalc schedule + set timer, don't enforce switch (no turn on/off)
             try:
                 await coordinator.async_reload()
             except Exception as e:
@@ -517,7 +531,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Get current items
@@ -554,7 +572,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Update options
@@ -580,7 +602,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Toggle enabled
@@ -628,7 +654,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Get current active buttons
@@ -663,16 +693,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 "duration": duration
             }
             
-            # Update options
+            # Update options and refresh scheduler (recalc next transition + set timer, like old version)
             new_options = {**entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
             hass.config_entries.async_update_entry(entry, options=new_options)
-            
-            # Trigger sensor update
             try:
                 await coordinator.async_reload()
+                coordinator.notify_listeners_immediate()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
             _LOGGER.info("Set active button %s for entity %s (entry %s)", button_id, entity_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_set_active_button: %s", e, exc_info=True)
@@ -690,7 +718,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Get coordinator
             coordinator = hass.data[DOMAIN].get(entry_id)
             if not coordinator:
-                _LOGGER.error("Entry %s not found", entry_id)
+                _LOGGER.error(
+                    "Entry %s not found. Available: %s",
+                    entry_id,
+                    list(hass.data.get(DOMAIN, {}).keys()),
+                )
                 return
             
             # Get current active buttons
@@ -701,16 +733,14 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             if entity_id in active_buttons:
                 del active_buttons[entity_id]
             
-            # Update options
+            # Update options and refresh scheduler (recalc next transition + set timer, like old version)
             new_options = {**entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
             hass.config_entries.async_update_entry(entry, options=new_options)
-            
-            # Trigger sensor update
             try:
                 await coordinator.async_reload()
+                coordinator.notify_listeners_immediate()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
             _LOGGER.info("Cleared active button for entity %s (entry %s)", entity_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_clear_active_button: %s", e, exc_info=True)

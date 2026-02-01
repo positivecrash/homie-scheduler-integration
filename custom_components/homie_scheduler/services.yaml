@@ -3,10 +3,6 @@
 set_items:
   name: Set items
   description: Set all schedule items at once
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID
@@ -24,10 +20,6 @@ set_items:
 add_item:
   name: Add item
   description: Add a new schedule item
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID
@@ -84,10 +76,6 @@ add_item:
 update_item:
   name: Update item
   description: Update an existing schedule item
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID
@@ -149,10 +137,6 @@ update_item:
 delete_item:
   name: Delete item
   description: Delete a schedule item
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID
@@ -170,10 +154,6 @@ delete_item:
 set_enabled:
   name: Set enabled
   description: Enable or disable the scheduler
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID
@@ -191,10 +171,6 @@ set_enabled:
 toggle_enabled:
   name: Toggle enabled
   description: Toggle the scheduler enabled state
-  target:
-    entity:
-      domain: sensor
-      integration: homie_scheduler
   fields:
     entry_id:
       name: Entry ID

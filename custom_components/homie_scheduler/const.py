@@ -7,9 +7,15 @@ DOMAIN: Final = "homie_scheduler"
 CONF_SWITCH_ENTITY: Final = "switch_entity"
 CONF_NAME: Final = "name"
 CONF_ENTITY_MAX_RUNTIME: Final = "entity_max_runtime"  # Dict: {entity_id: max_minutes}
+CONF_DEFAULT_DURATION: Final = "default_duration"  # Default slot duration (minutes) when not specified
 
 # Defaults
 DEFAULT_NAME: Final = "Homie Schedule"
+DEFAULT_DURATION: Final = 30  # Default slot duration in minutes for set_items when item has no duration
+
+# Scheduler internal: window (seconds) to detect "turned on by scheduler" vs user/button/physical
+# If switch turns ON within this window after scheduler called service_start, we skip max_runtime monitor (slot controls turn-off)
+SCHEDULER_TURN_ON_WINDOW_SECONDS: Final = 10
 
 # Schedule item keys
 ITEM_ID: Final = "id"
