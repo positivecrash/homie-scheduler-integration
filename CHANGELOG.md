@@ -1,9 +1,14 @@
 # Changelog
 
-## [1.0.1]
+## [1.0.2]
 
 ### Changed
 
+- Reduced log verbosity: removed routine DEBUG/INFO from reschedule loop, slot calculations, and transition scheduling
+
+## [1.0.1]
+
+### Changed
 - Simplified entity structure: `sensor.homie_schedule_next_run` and `sensor.homie_schedule_status` removed
 - Improved max runtime setting for entities
 - Overlap and cold start: one formula — `turn_off = min(slot_end, entity_start + max_runtime)`

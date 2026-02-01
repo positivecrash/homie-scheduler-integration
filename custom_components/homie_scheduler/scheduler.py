@@ -369,11 +369,6 @@ class SchedulerCoordinator:
             
             # Read fresh items from entry (not cached)
             current_items = self.items  # This reads from entry.options.get("items", [])
-            _LOGGER.debug(
-                "Rescheduling with %d items: %s",
-                len(current_items),
-                [(item.get(ITEM_ENTITY_ID), item.get(ITEM_TIME), item.get(ITEM_WEEKDAYS), item.get(ITEM_ENABLED)) for item in current_items]
-            )
             
             # Group items by entity_id
             items_by_entity: dict[str, list[dict[str, Any]]] = {}
@@ -416,26 +411,12 @@ class SchedulerCoordinator:
                 active_items = self._get_active_items_for_entity(entity_items, now)
                 should_be_on = len(active_items) > 0
                 
-                if active_items:
-                    slot_ends = [self._calculate_item_end(item, now) for item in active_items]
-                    slot_ends = [t for t in slot_ends if t is not None]
-                    next_end = max(slot_ends) if slot_ends else None
-                    _LOGGER.info(
-                        "Entity %s has %d active item(s): %s; slot(s) end at %s",
-                        entity_id,
-                        len(active_items),
-                        [(item.get(ITEM_TIME), item.get(ITEM_DURATION)) for item in active_items],
-                        next_end.isoformat() if next_end else "?",
-                    )
-                
                 if not skip_enforce:
                     await self._async_enforce_switch_state(entity_id, should_be_on, entity_items)
                 
                 # Schedule this entity's next transition (per-entity timer)
                 next_transition = self._calculate_next_transition_for_entity(entity_items, now, active_items)
                 if next_transition:
-                    _LOGGER.info("Entity %s next transition at %s (in %.1f seconds)", 
-                               entity_id, next_transition.isoformat(), (next_transition - now).total_seconds())
                     delay = (next_transition - now).total_seconds()
                     self._entity_next_transition[entity_id] = next_transition
                     
@@ -443,15 +424,10 @@ class SchedulerCoordinator:
                         _LOGGER.debug("Entity %s transition time has passed, triggering immediately", entity_id)
                         self.hass.async_create_task(self._async_handle_entity_transition(entity_id))
                     elif delay < 1.0:
-                        _LOGGER.debug("Entity %s transition very soon (%.2f s), scheduling for 1 s", entity_id, delay)
                         self._entity_cancel_timers[entity_id] = async_call_later(
                             self.hass, 1.0, self._make_entity_transition_callback(entity_id)
                         )
                     else:
-                        _LOGGER.info(
-                            "Entity %s: scheduling next transition at %s (in %.0f s)",
-                            entity_id, next_transition.isoformat(), delay,
-                        )
                         self._entity_cancel_timers[entity_id] = async_call_later(
                             self.hass, delay, self._make_entity_transition_callback(entity_id)
                         )
@@ -595,13 +571,10 @@ class SchedulerCoordinator:
                             service_value,
                             blocking=True,
                         )
-                        _LOGGER.info("Entity %s turned on by scheduler, storing slot end time...", entity_id)
-                        
                         # Store slot end time in _max_runtime_turn_off_times so status card can show countdown
                         # Cap by entity_max_runtime if entity was already on (prev runtime + slot <= max)
                         now = dt_util.now()
                         active_items_for_entity = self._get_active_items_for_entity(items, now)
-                        _LOGGER.info("Active items for %s: %d items", entity_id, len(active_items_for_entity))
                         if active_items_for_entity:
                             slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
                             slot_ends = [t for t in slot_ends if t is not None]
@@ -610,12 +583,6 @@ class SchedulerCoordinator:
                                 actual_end = self._cap_turn_off_by_max_runtime(entity_id, latest_end)
                                 turn_off_time_ms = int(actual_end.timestamp() * 1000)
                                 self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-                                _LOGGER.info(
-                                    "Stored turn-off time for %s: %s (in %d seconds)",
-                                    entity_id,
-                                    actual_end.isoformat(),
-                                    int((actual_end - now).total_seconds()),
-                                )
                                 # Notify listeners so bridge sensor updates
                                 self._notify_listeners()
                     except Exception as e:
@@ -661,10 +628,6 @@ class SchedulerCoordinator:
                             self._entity_states[entity_id] = entity_state
                         turn_off_time_ms = int(actual_end.timestamp() * 1000)
                         self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-                        _LOGGER.info(
-                            "Stored turn-off time for %s: %s (in %d seconds)",
-                            entity_id, actual_end.isoformat(), int((actual_end - now).total_seconds()),
-                        )
                         # Status card prioritizes active_buttons.timer_end — update it so "will be off" shows extended time
                         active_buttons = dict(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}))
                         if entity_id in active_buttons:
@@ -676,10 +639,6 @@ class SchedulerCoordinator:
                             }
                             new_options = {**self.entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
                             self.hass.config_entries.async_update_entry(self.entry, options=new_options)
-                            _LOGGER.info(
-                                "Updated active_buttons for %s: timer_end=%d duration=%d min (slot overlap)",
-                                entity_id, turn_off_time_ms, remaining_min,
-                            )
                         self._notify_listeners()
                 
             elif not should_be_on and is_on:
@@ -726,7 +685,7 @@ class SchedulerCoordinator:
                                 del self._max_runtime_turn_off_times[entity_id]
                                 self._notify_listeners()
                             
-                            _LOGGER.info("Successfully called service_end for %s", entity_id)
+                            _LOGGER.debug("Successfully called service_end for %s", entity_id)
                         except Exception as e:
                             _LOGGER.error("Failed to call service_end for %s: %s", entity_id, e)
                     else:
@@ -755,10 +714,7 @@ class SchedulerCoordinator:
     async def _async_handle_entity_transition(self, entity_id: str) -> None:
         """Handle scheduled transition for a single entity (its timer fired)."""
         now = dt_util.now()
-        _LOGGER.info(
-            "Transition fired for entity %s at %s (enforcing state and rescheduling this entity)",
-            entity_id, now.isoformat(),
-        )
+        _LOGGER.debug("Transition fired for entity %s at %s", entity_id, now.isoformat())
         items_for_entity = [i for i in self.items if i.get(ITEM_ENTITY_ID) == entity_id]
         if not items_for_entity:
             _LOGGER.debug("Entity %s has no items, skipping", entity_id)
@@ -932,10 +888,6 @@ class SchedulerCoordinator:
             if next_end and entity_id:
                 capped = self._cap_turn_off_by_max_runtime(entity_id, next_end)
                 candidates.append(capped)
-                _LOGGER.debug(
-                    "Entity %s slot end %s (capped: %s)",
-                    entity_id, next_end.isoformat(), capped.isoformat(),
-                )
         
         # Add max_runtime turn-off only when entity is on but NO active slot (manual/button turn-on)
         if entity_id and not active_items:
@@ -948,10 +900,6 @@ class SchedulerCoordinator:
                     max_runtime_turn_off = last_changed_dt + timedelta(minutes=max_minutes)
                     if max_runtime_turn_off > now:
                         candidates.append(max_runtime_turn_off)
-                        _LOGGER.debug(
-                            "Entity %s max_runtime turn-off at %s (no active slot)",
-                            entity_id, max_runtime_turn_off.isoformat(),
-                        )
         
         # Add all possible start times for this entity
         for item in items:
@@ -996,14 +944,6 @@ class SchedulerCoordinator:
             
             # Check if weekday matches
             if candidate_dt.weekday() in weekdays:
-                _LOGGER.debug(
-                    "Next start for item %s: %s (now: %s, day_offset: %d, weekday: %d)",
-                    item.get(ITEM_TIME),
-                    candidate_dt.isoformat(),
-                    now.isoformat(),
-                    day_offset,
-                    candidate_dt.weekday()
-                )
                 return candidate_dt
         
         return None
@@ -1033,12 +973,6 @@ class SchedulerCoordinator:
             end_dt = start_dt + timedelta(minutes=duration)
             
             if start_dt <= now < end_dt:
-                _LOGGER.info(
-                    "Slot end calculated: %s (duration %d min, item time %s)",
-                    end_dt.isoformat(),
-                    duration,
-                    time_str,
-                )
                 return end_dt
         
         # Check yesterday (cross-midnight)
@@ -1050,11 +984,6 @@ class SchedulerCoordinator:
             end_dt = start_dt + timedelta(minutes=duration)
             
             if start_dt <= now < end_dt:
-                _LOGGER.info(
-                    "Slot end calculated (cross-midnight): %s (duration %d min)",
-                    end_dt.isoformat(),
-                    duration,
-                )
                 return end_dt
         
         return None
