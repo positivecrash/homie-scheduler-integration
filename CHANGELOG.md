@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3]
+
+### Changed
+
+- Track state for entities in `active_buttons` (e.g. recirculation-only) so "Latest activity" is recorded
+- When adding a state listener for an entity that is already ON, set `last_run_start` so last run is saved when it turns off
+
 ## [1.0.2]
 
 ### Changed

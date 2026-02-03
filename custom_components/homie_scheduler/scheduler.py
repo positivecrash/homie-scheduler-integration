@@ -83,6 +83,9 @@ class SchedulerCoordinator:
         # Skip turn-on on first reschedule after startup (prevents boiler turning on after HA restart)
         self._cold_start: bool = True
 
+        # Last run per entity (for status card): {entity_id: {started_at_iso, ended_at_iso, duration_minutes}}
+        self._entity_last_run: dict[str, dict[str, Any]] = {}
+
     @property
     def is_enabled(self) -> bool:
         """Return if scheduler is enabled."""
@@ -185,8 +188,8 @@ class SchedulerCoordinator:
         _LOGGER.debug("Starting scheduler for %s", self.entry.entry_id)
         
         try:
-            # Get all unique entity_ids from items AND from entity_max_runtime
-            # (max_runtime must apply even when boiler is turned on outside schedule, e.g. physical switch)
+            # Get all unique entity_ids from items, entity_max_runtime, and active_buttons
+            # (max_runtime: when turned on outside schedule; active_buttons: e.g. recirculation-only entities for last_run)
             entity_ids = set()
             for item in self.items:
                 entity_id = item.get(ITEM_ENTITY_ID)
@@ -195,6 +198,9 @@ class SchedulerCoordinator:
             entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
             for entity_id in entity_max_runtime:
                 if entity_id and entity_max_runtime.get(entity_id, 0) > 0:
+                    entity_ids.add(entity_id)
+            for entity_id in self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}):
+                if entity_id:
                     entity_ids.add(entity_id)
             
             # Listen to switch state changes for all entities
@@ -300,11 +306,15 @@ class SchedulerCoordinator:
         if _entity_state_is_on(entity_id, new_state) and not _entity_state_is_on(entity_id, old_state):
             _LOGGER.info("Entity %s turned ON (old=%s, new=%s)", entity_id, old_state.state, new_state.state)
             
-            # Clear any "blocked until" window when user/scheduler turns it on
+            # Clear any "blocked until" window when user/scheduler turns it on; store run start for "last run"
             entity_state = self._entity_states.get(entity_id, {})
             if entity_state.get("blocked_until"):
                 entity_state["blocked_until"] = None
-                self._entity_states[entity_id] = entity_state
+            try:
+                entity_state["last_run_start"] = dt_util.as_utc(new_state.last_changed)
+            except Exception:
+                pass
+            self._entity_states[entity_id] = entity_state
 
             # Start max_runtime only when no active slot — slot controls turn-off
             # _start_max_runtime_monitor also checks _entity_has_active_slot (safety net)
@@ -314,6 +324,23 @@ class SchedulerCoordinator:
         if not _entity_state_is_on(entity_id, new_state):
             self._stop_max_runtime_monitor(entity_id)
             self.hass.async_create_task(self._async_clear_active_button_on_turn_off(entity_id))
+            # Record last run (start → end, duration) for status card
+            try:
+                entity_state = self._entity_states.get(entity_id, {})
+                start_dt = entity_state.get("last_run_start")
+                if start_dt is not None:
+                    end_dt = dt_util.as_utc(new_state.last_changed)
+                    duration_minutes = max(0, int((end_dt - start_dt).total_seconds() / 60))
+                    self._entity_last_run[entity_id] = {
+                        "started_at": start_dt.isoformat(),
+                        "ended_at": end_dt.isoformat(),
+                        "duration_minutes": duration_minutes,
+                    }
+                    entity_state.pop("last_run_start", None)
+                    self._entity_states[entity_id] = entity_state
+                    self._notify_listeners()
+            except Exception:
+                pass
 
             # If it was turned off while a schedule slot is currently active,
             # block re-enabling until the slot ends (prevents "stuck ON" and
@@ -380,10 +407,11 @@ class SchedulerCoordinator:
                     items_by_entity[entity_id] = []
                 items_by_entity[entity_id].append(item)
             
-            # Update state listeners: items entities + entity_max_runtime (so max_runtime works when turned on from outside)
+            # Update state listeners: items + entity_max_runtime + active_buttons (last_run for recirculation-only entities)
             entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
             max_runtime_entity_ids = {eid for eid, mins in entity_max_runtime.items() if eid and mins > 0}
-            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids
+            active_buttons_entity_ids = set(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}).keys())
+            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids | active_buttons_entity_ids
             existing_entity_ids = set(self._cancel_state_listeners.keys())
             
             # Add listeners for new entities
@@ -396,6 +424,13 @@ class SchedulerCoordinator:
                 self._entity_states[entity_id] = self._entity_states.get(entity_id) or {
                     "scheduler_controlled_on": False,
                 }
+                # If entity is already on (e.g. recirculation just started), set last_run_start so we record last_run when it turns off
+                state = self.hass.states.get(entity_id)
+                if state and _entity_state_is_on(entity_id, state):
+                    try:
+                        self._entity_states[entity_id]["last_run_start"] = dt_util.as_utc(state.last_changed)
+                    except Exception:
+                        pass
             
             # Remove listeners only for entities no longer in items AND no longer in max_runtime
             for entity_id in existing_entity_ids - current_entity_ids:
