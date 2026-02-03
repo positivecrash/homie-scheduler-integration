@@ -7,7 +7,7 @@ from typing import Any, TYPE_CHECKING
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import (
     CONF_NAME,
@@ -175,6 +175,29 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             version=2,
         )
         _LOGGER.info("Migrated entry %s from version 1 to 2", entry.entry_id)
+        return True
+
+    if entry.version == 2:
+        # Rename entities: sensor.homie_schedule_scheduler_info -> sensor.homie_scheduler_info,
+        # switch.homie_schedule_schedule_enabled -> switch.homie_scheduler_enabled
+        try:
+            registry = er.async_get(hass)
+            for entity_entry in list(registry.entities.values()):
+                if entity_entry.config_entry_id != entry.entry_id:
+                    continue
+                old_eid = entity_entry.entity_id
+                new_eid = None
+                if old_eid.startswith("sensor.homie_schedule_scheduler_info"):
+                    new_eid = "sensor.homie_scheduler_info" + old_eid[len("sensor.homie_schedule_scheduler_info"):]
+                elif old_eid.startswith("switch.homie_schedule_schedule_enabled"):
+                    new_eid = "switch.homie_scheduler_enabled" + old_eid[len("switch.homie_schedule_schedule_enabled"):]
+                if new_eid and new_eid != old_eid:
+                    registry.async_update_entity(old_eid, new_entity_id=new_eid)
+                    _LOGGER.info("Migrated entity %s -> %s", old_eid, new_eid)
+            hass.config_entries.async_update_entry(entry, version=3)
+            _LOGGER.info("Migrated entry %s from version 2 to 3 (entity renames)", entry.entry_id)
+        except Exception as e:
+            _LOGGER.warning("Migration to v3 (entity renames) failed: %s", e)
         return True
 
     return True

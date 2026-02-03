@@ -39,7 +39,7 @@ class SchedulerBridgeSensor(SensorEntity):
     """Bridge sensor with controlled_entity and entry_id attributes for UI card."""
 
     _attr_has_entity_name = True
-    _attr_name = "Scheduler Info"
+    _attr_name = "Info"
 
     def __init__(
         self,
@@ -119,7 +119,9 @@ class SchedulerBridgeSensor(SensorEntity):
         
         # Entity max runtime limits (entity_id -> minutes) so cards can show countdown fallback from last_changed
         entity_max_runtime = self._entry.options.get(CONF_ENTITY_MAX_RUNTIME, {}) or {}
-        
+        # Last run per entity: {entity_id: {started_at, ended_at, duration_minutes}} for status card
+        entity_last_runs = getattr(self._coordinator, "_entity_last_run", {}) or {}
+
         return {
             ATTR_ENTRY_ID: self._entry.entry_id,
             ATTR_ITEMS: items,
@@ -132,4 +134,5 @@ class SchedulerBridgeSensor(SensorEntity):
             "active_buttons": active_buttons,  # Active button states: {entity_id: {button_id, timer_end, duration}}
             "max_runtime_turn_off_times": max_runtime_turn_off_times,  # Expected turn-off from max_runtime: {entity_id: turn_off_time_ms}
             "entity_max_runtime": entity_max_runtime,  # Max minutes per entity: {entity_id: minutes} for fallback countdown
+            "entity_last_runs": entity_last_runs,  # Per-entity last run: {entity_id: {started_at, ended_at, duration_minutes}}
         }

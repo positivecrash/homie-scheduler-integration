@@ -31,7 +31,7 @@ class SchedulerSwitch(SwitchEntity):
     """Switch to enable/disable the scheduler."""
 
     _attr_has_entity_name = True
-    _attr_name = "Schedule Enabled"
+    _attr_name = "Enabled"
 
     def __init__(
         self,

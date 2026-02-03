@@ -28,8 +28,8 @@ The integration schedules turn-on/turn-off by setting deferred callbacks in code
 
 | Entity | Entity ID | Type | Description |
 |--------|-----------|------|-------------|
-| **Scheduler Info** | `sensor.homie_schedule_scheduler_info` | sensor | Bridge sensor used by Lovelace cards. Attributes: `entry_id`, `items`, `entity_next_runs`, `entity_next_transitions`, `active_buttons`, `max_runtime_turn_off_times`, `entity_max_runtime`. Per-entity data for all cards. |
-| **Schedule Enabled** | `switch.homie_schedule_schedule_enabled` | switch | Toggle to enable or disable the scheduler. |
+| **Scheduler Info** | `sensor.homie_scheduler_info` | sensor | Bridge sensor used by Lovelace cards. Attributes: `entry_id`, `items`, `entity_next_runs` (next slot start + duration), `entity_next_transitions` (next event start or end, fallback), `entity_last_runs`, `active_buttons`, `max_runtime_turn_off_times`, `entity_max_runtime`. Per-entity data for all cards. |
+| **Schedule Enabled** | `switch.homie_scheduler_enabled` | switch | Toggle to enable or disable the scheduler. |
 
 ### Services
 
@@ -46,7 +46,7 @@ The integration schedules turn-on/turn-off by setting deferred callbacks in code
 
 All services are in domain `homie_scheduler`. Cards use these services internally; manual calls are rarely needed.
 
-**How to find `entry_id`:** Open **Developer Tools** → **States**, find `sensor.homie_schedule_scheduler_info`, look at the attribute `entry_id` (e.g. `a1b2c3d4e5f6g7h8...`).
+**How to find `entry_id`:** Open **Developer Tools** → **States**, find `sensor.homie_scheduler_info` (or `sensor.homie_scheduler_info_2` for a second instance), look at the attribute `entry_id` (e.g. `a1b2c3d4e5f6g7h8...`).
 
 ### Options and config updates
 

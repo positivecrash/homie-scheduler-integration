@@ -10,7 +10,7 @@ CONF_ENTITY_MAX_RUNTIME: Final = "entity_max_runtime"  # Dict: {entity_id: max_m
 CONF_DEFAULT_DURATION: Final = "default_duration"  # Default slot duration (minutes) when not specified
 
 # Defaults
-DEFAULT_NAME: Final = "Homie Schedule"
+DEFAULT_NAME: Final = "Homie Scheduler"
 DEFAULT_DURATION: Final = 30  # Default slot duration in minutes for set_items when item has no duration
 
 # Scheduler internal: window (seconds) to detect "turned on by scheduler" vs user/button/physical
