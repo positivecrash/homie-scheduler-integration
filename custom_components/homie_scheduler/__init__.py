@@ -24,6 +24,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Scheduler from a config entry."""
     _LOGGER.debug("Setting up Scheduler entry: %s", entry.entry_id)
 
+    if not await async_migrate_entry(hass, entry):
+        _LOGGER.error("Migration failed for entry %s", entry.entry_id)
+        return False
+
     try:
         # Create coordinator
         coordinator = SchedulerCoordinator(hass, entry)
