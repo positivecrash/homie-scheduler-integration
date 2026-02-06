@@ -24,6 +24,7 @@ from .const import (
     ITEM_SERVICE_START,
     ITEM_SERVICE_END,
     STORAGE_ACTIVE_BUTTONS,
+    STORAGE_ENTITIES_FOR_LAST_RUN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,6 +80,10 @@ class SchedulerCoordinator:
         # Expected turn-off time for max_runtime monitors (Unix timestamp in ms)
         # Key: entity_id, Value: turn_off_time_ms (when monitor will turn off the entity)
         self._max_runtime_turn_off_times: dict[str, int] = {}
+
+        # Button-card turn-off timers (run for / recirculation): server-side so they fire after app close
+        # Key: entity_id, Value: cancel callback for async_call_later
+        self._button_turn_off_cancels: dict[str, CALLBACK_TYPE] = {}
 
         # Skip turn-on on first reschedule after startup (prevents boiler turning on after HA restart)
         self._cold_start: bool = True
@@ -202,6 +207,9 @@ class SchedulerCoordinator:
             for entity_id in self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}):
                 if entity_id:
                     entity_ids.add(entity_id)
+            for entity_id in self.entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or []:
+                if entity_id:
+                    entity_ids.add(entity_id)
             
             # Listen to switch state changes for all entities
             if entity_ids:
@@ -222,6 +230,9 @@ class SchedulerCoordinator:
             
             # Initial schedule calculation
             await self._async_reschedule()
+
+            # Restore button turn-off timers (run for / recirculation) from active_buttons
+            self._restore_button_turn_off_timers()
             
             # Check entities with max_runtime - if already ON, start monitoring
             # _start_max_runtime_monitor skips if entity has active slot (slot controls turn-off)
@@ -260,6 +271,10 @@ class SchedulerCoordinator:
         for entity_id in list(self._max_runtime_timers.keys()):
             self._stop_max_runtime_monitor(entity_id)
         
+        # Cancel all button turn-off timers
+        for eid in list(self._button_turn_off_cancels.keys()):
+            self._cancel_button_turn_off(eid)
+
         # Cancel all state listeners
         for cancel_listener in self._cancel_state_listeners.values():
             if cancel_listener:
@@ -288,6 +303,9 @@ class SchedulerCoordinator:
                         max_minutes
                     )
                     self._start_max_runtime_monitor(entity_id)
+
+        # Restore button turn-off timers from active_buttons (so they survive app close)
+        self._restore_button_turn_off_timers()
         
         await self._async_reschedule(skip_enforce=True)
 
@@ -330,11 +348,13 @@ class SchedulerCoordinator:
                 start_dt = entity_state.get("last_run_start")
                 if start_dt is not None:
                     end_dt = dt_util.as_utc(new_state.last_changed)
-                    duration_minutes = max(0, int((end_dt - start_dt).total_seconds() / 60))
+                    duration_seconds = max(0, int((end_dt - start_dt).total_seconds()))
+                    duration_minutes = duration_seconds // 60
                     self._entity_last_run[entity_id] = {
                         "started_at": start_dt.isoformat(),
                         "ended_at": end_dt.isoformat(),
                         "duration_minutes": duration_minutes,
+                        "duration_seconds": duration_seconds,
                     }
                     entity_state.pop("last_run_start", None)
                     self._entity_states[entity_id] = entity_state
@@ -411,7 +431,8 @@ class SchedulerCoordinator:
             entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
             max_runtime_entity_ids = {eid for eid, mins in entity_max_runtime.items() if eid and mins > 0}
             active_buttons_entity_ids = set(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}).keys())
-            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids | active_buttons_entity_ids
+            entities_for_last_run = set(self.entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or [])
+            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids | active_buttons_entity_ids | entities_for_last_run
             existing_entity_ids = set(self._cancel_state_listeners.keys())
             
             # Add listeners for new entities
@@ -1208,3 +1229,68 @@ class SchedulerCoordinator:
         new_options = {**self.entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
         self.hass.config_entries.async_update_entry(self.entry, options=new_options)
         self.notify_listeners_immediate()
+
+    def _cancel_button_turn_off(self, entity_id: str) -> None:
+        """Cancel server-side button turn-off timer for entity."""
+        if entity_id in self._button_turn_off_cancels:
+            self._button_turn_off_cancels[entity_id]()
+            del self._button_turn_off_cancels[entity_id]
+
+    def _schedule_button_turn_off(self, entity_id: str, timer_end_ms: int) -> None:
+        """Schedule server-side turn_off at timer_end (Unix ms). Survives app close."""
+        import time as _time
+        self._cancel_button_turn_off(entity_id)
+        now_ms = int(_time.time() * 1000)
+        delay_sec = max(0.0, (timer_end_ms - now_ms) / 1000.0)
+        if delay_sec <= 0:
+            return
+
+        @callback
+        def _fire(_dt: datetime) -> None:
+            self._button_turn_off_cancels.pop(entity_id, None)
+
+            async def _do() -> None:
+                try:
+                    domain = entity_id.split(".", 1)[0]
+                    await self.hass.services.async_call(
+                        domain,
+                        SERVICE_TURN_OFF,
+                        {"entity_id": entity_id},
+                        blocking=True,
+                    )
+                except Exception as e:
+                    _LOGGER.warning("Button turn-off failed for %s: %s", entity_id, e)
+                active_buttons = dict(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}))
+                if entity_id in active_buttons:
+                    del active_buttons[entity_id]
+                    new_opts = {**self.entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
+                    self.hass.config_entries.async_update_entry(self.entry, options=new_opts)
+                self.notify_listeners_immediate()
+
+            self.hass.async_create_task(_do())
+
+        self._button_turn_off_cancels[entity_id] = async_call_later(
+            self.hass,
+            delay_sec,
+            _fire,
+        )
+
+    def _restore_button_turn_off_timers(self) -> None:
+        """Cancel all button timers and re-schedule from active_buttons (startup/reload)."""
+        import time as _time
+        for eid in list(self._button_turn_off_cancels.keys()):
+            self._cancel_button_turn_off(eid)
+        now_ms = int(_time.time() * 1000)
+        active_buttons = self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}) or {}
+        for eid, data in active_buttons.items():
+            if not eid or not isinstance(data, dict):
+                continue
+            timer_end = data.get("timer_end")
+            if timer_end is None:
+                continue
+            try:
+                te_ms = int(timer_end)
+            except (TypeError, ValueError):
+                continue
+            if te_ms > now_ms:
+                self._schedule_button_turn_off(eid, te_ms)

@@ -41,7 +41,9 @@ from .const import (
     SERVICE_UPDATE_ITEM,
     SERVICE_SET_ACTIVE_BUTTON,
     SERVICE_CLEAR_ACTIVE_BUTTON,
+    SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
     STORAGE_ACTIVE_BUTTONS,
+    STORAGE_ENTITIES_FOR_LAST_RUN,
     WEEKDAYS,
 )
 from .scheduler import SchedulerCoordinator
@@ -725,6 +727,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 )
                 return
             
+            # Cancel server-side button turn-off timer so we don't turn off later
+            coordinator._cancel_button_turn_off(entity_id)
+
             # Get current active buttons
             entry = coordinator.entry
             active_buttons = dict(entry.options.get(STORAGE_ACTIVE_BUTTONS, {}))
@@ -745,6 +750,30 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as e:
             _LOGGER.error("Error in handle_clear_active_button: %s", e, exc_info=True)
 
+    async def handle_register_entity_for_last_run(call: ServiceCall) -> None:
+        """Register entity for Latest activity tracking (called by status card so external turn-on is recorded)."""
+        try:
+            entry_id = call.data.get(ATTR_ENTRY_ID)
+            entity_id = call.data.get(ATTR_ENTITY_ID)
+            if not entry_id or not entity_id:
+                return
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if not coordinator:
+                return
+            entry = coordinator.entry
+            current = list(entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or [])
+            if entity_id in current:
+                return
+            current.append(entity_id)
+            new_options = {**entry.options, STORAGE_ENTITIES_FOR_LAST_RUN: current}
+            hass.config_entries.async_update_entry(entry, options=new_options)
+            try:
+                await coordinator.async_reload()
+            except Exception as e:
+                _LOGGER.debug("Reload after register_entity_for_last_run: %s", e)
+        except Exception as e:
+            _LOGGER.debug("register_entity_for_last_run: %s", e)
+
     # Service schemas for active buttons
     SERVICE_SET_ACTIVE_BUTTON_SCHEMA = vol.Schema(
         {
@@ -757,6 +786,13 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     )
     
     SERVICE_CLEAR_ACTIVE_BUTTON_SCHEMA = vol.Schema(
+        {
+            vol.Required(ATTR_ENTRY_ID): cv.string,
+            vol.Required(ATTR_ENTITY_ID): cv.string,
+        }
+    )
+
+    SERVICE_REGISTER_ENTITY_FOR_LAST_RUN_SCHEMA = vol.Schema(
         {
             vol.Required(ATTR_ENTRY_ID): cv.string,
             vol.Required(ATTR_ENTITY_ID): cv.string,
@@ -851,6 +887,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON, e)
+
+    try:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
+            handle_register_entity_for_last_run,
+            schema=SERVICE_REGISTER_ENTITY_FOR_LAST_RUN_SCHEMA,
+        )
+        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN)
+    except Exception as e:
+        _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN, e)
     
     _LOGGER.info("scheduler services registration completed")
 
@@ -868,5 +915,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMAIN, SERVICE_TOGGLE_ENABLED)
         hass.services.async_remove(DOMAIN, SERVICE_SET_ACTIVE_BUTTON)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON)
+        hass.services.async_remove(DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN)
     except Exception as e:
         _LOGGER.error("Error unloading services: %s", e)
