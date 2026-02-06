@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.0.4]
+
+### Changed
+
+- Button turn-off timers run on the server (survive app close; restore after HA restart)
+- Service `register_entity_for_last_run`: status card registers entity so Latest activity is recorded for external turn-on
+- Latest activity: store and show duration with seconds (e.g. "4 min 30 s")
+- Call `async_migrate_entry` in setup so entity renames (v2→v3) run
+
 ## [1.0.3]
 
 ### Changed
