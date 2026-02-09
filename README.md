@@ -2,6 +2,8 @@
 
 Home Assistant custom integration for schedule management. **For the Lovelace UI you need** [**Homie Scheduler Cards**](https://github.com/positivecrash/homie-scheduler-cards).
 
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=positivecrash&repository=homie-scheduler-integration&category=integration)
+
 ## Features
 
 - Schedule management for switch, input_boolean, light, fan, cover, and climate entities
@@ -11,20 +13,7 @@ Home Assistant custom integration for schedule management. **For the Lovelace UI
 
 The integration schedules turn-on/turn-off by setting deferred callbacks in code via `async_call_later()`. It does not use automations or timer entities. After an HA restart, it rebuilds the schedule from its config and reschedules those callbacks.
 
-## Installation
-
-### Via HACS (recommended)
-
-1. Add this repository to HACS as a custom repository.
-2. Install **Homie Scheduler** from HACS.
-3. **Restart Home Assistant.**
-4. Go to **Settings** → **Devices & Services** → **Add Integration** → search for **Homie Scheduler** and add it.
-
-   Or click the badge below (only works after restart):
-
-   [![Open your Home Assistant instance and add the integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=homie_scheduler)
-
-### Manual installation
+## Manual installation
 
 1. Copy the folder `custom_components/homie_scheduler` into your Home Assistant config directory so you have `config/custom_components/homie_scheduler/` with all integration files inside.
 2. Restart Home Assistant.
@@ -73,18 +62,6 @@ The integration **does not create** automations or timer entities in Home Assist
 ### Options and config updates
 
 The integration does **not** register an `OptionsUpdateListener` (`entry.add_update_listener`). When you save options in the integration config screen (Options Flow), the flow calls `async_schedule_reload()`, so the integration reloads and the new options take effect automatically. When a **service** updates options (e.g. `set_items`, `set_active_button`, `update_item`), it calls `coordinator.async_reload()` so the coordinator picks up the new values.
-
-## Troubleshooting
-
-**"This integration does not support configuration via the UI"** error when clicking the badge:
-- Ensure you **restarted Home Assistant** after installing the integration through HACS or manually.
-- If the integration is already added, the badge won't work. Check **Settings** → **Devices & Services** to see if **Homie Scheduler** is already listed.
-- If the integration is not showing up after restart, check Home Assistant logs for errors: **Settings** → **System** → **Logs**.
-
-**Integration not showing in HACS** or **Version displays as old**:
-- Open the integration in HACS → click **⋮** (three dots) → **Update information**.
-- Clear your browser cache (Ctrl+Shift+R or Cmd+Shift+R).
-- Restart Home Assistant.
 
 ## License
 
