@@ -225,6 +225,13 @@ class SchedulerCoordinator:
                         self._entity_states[entity_id] = {
                             "scheduler_controlled_on": False,
                         }
+                        # If entity is already on (e.g. after HA restart), set last_run_start so we record latest run when it turns off
+                        state = self.hass.states.get(entity_id)
+                        if state and _entity_state_is_on(entity_id, state):
+                            try:
+                                self._entity_states[entity_id]["last_run_start"] = dt_util.as_utc(state.last_changed)
+                            except Exception:
+                                pass
                     except Exception as e:
                         _LOGGER.error("Error setting up listener for %s: %s", entity_id, e)
             
@@ -460,6 +467,22 @@ class SchedulerCoordinator:
                     del self._cancel_state_listeners[entity_id]
                 if entity_id in self._entity_states:
                     del self._entity_states[entity_id]
+            
+            # Ensure last_run_start is set for any entity that is currently ON (e.g. after reload
+            # or when entity was on before we added the listener). Otherwise we miss recording
+            # "latest run" when the user turns it off.
+            for entity_id in current_entity_ids:
+                es = self._entity_states.get(entity_id)
+                if es is None:
+                    continue
+                if es.get("last_run_start") is not None:
+                    continue
+                state = self.hass.states.get(entity_id)
+                if state and _entity_state_is_on(entity_id, state):
+                    try:
+                        es["last_run_start"] = dt_util.as_utc(state.last_changed)
+                    except Exception:
+                        pass
             
             # Process each entity independently: enforce state and set per-entity timer
             for entity_id, entity_items in items_by_entity.items():
