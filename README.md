@@ -1,10 +1,10 @@
 # Homie Scheduler Integration
 
-Home Assistant custom integration for schedule management (switch/input_boolean/climate). **For the Lovelace UI you need** [**Homie Scheduler Cards**](https://github.com/positivecrash/homie-scheduler-cards).
+Home Assistant custom integration for schedule management. **For the Lovelace UI you need** [**Homie Scheduler Cards**](https://github.com/positivecrash/homie-scheduler-cards).
 
 ## Features
 
-- Schedule management for switch/input_boolean/climate entities
+- Schedule management for switch, input_boolean, light, fan, cover, and climate entities
 - Multiple entities in one instance; time, duration (optional), weekdays
 - Custom service_start/service_end per item; conflict protection; overlapping schedules
 - Optional boiler max runtime (auto turn-off)
@@ -43,10 +43,19 @@ The integration schedules turn-on/turn-off by setting deferred callbacks in code
 | **toggle_enabled** | Toggle scheduler on/off. | `entry_id` |
 | **set_active_button** | Mark a "RUN FOR" button as active (used by button card). | `entry_id`, `entity_id`, `button_id`, `timer_end`, `duration` |
 | **clear_active_button** | Clear active button when entity turns off. | `entry_id`, `entity_id` |
+| **register_entity_for_last_run** | Register an entity for “latest activity” tracking (used by status card). | `entry_id`, `entity_id` |
 
 All services are in domain `homie_scheduler`. Cards use these services internally; manual calls are rarely needed.
 
-**How to find `entry_id`:** Open **Developer Tools** → **States**, find `sensor.homie_scheduler_info` (or `sensor.homie_scheduler_info_2` for a second instance), look at the attribute `entry_id` (e.g. `a1b2c3d4e5f6g7h8...`).
+**Weekdays:** In `add_item` and `update_item`, `weekdays` is a list of integers **0–6**: **0 = Monday**, 1 = Tuesday, …, 6 = Sunday (ISO weekday). Example: `[0, 1, 2, 3, 4]` = weekdays only.
+
+**How to find `entry_id`:** Open **Developer Tools** → **States**, find the sensor named **Scheduler Info** (entity ID like `sensor.<your_device_slug>_info`), and read the `entry_id` attribute.
+
+### How automation and timers work
+
+The integration **does not create** automations or timer entities in Home Assistant. Everything runs inside the integration. It uses internal timers (`async_call_later`). When a slot starts, it calls `service_start` (e.g. `switch.turn_on`). When the slot ends or the duration is over, it calls `service_end` (e.g. `switch.turn_off`). The schedule is stored in the integration config. After an HA restart it reads the config and sets all timers again. Max runtime (auto turn-off) and “run for X minutes” from the button card work the same way: a timer in code that turns the entity off when the time is up.
+
+**Entity turned on from outside** (manual, physical button, another automation): the integration does not cancel that. It only listens to state changes on the **Home Assistant server**. If **max runtime** is set for that entity, it starts a timer and turns the entity off after that many minutes. This works **even if the app or browser is closed**, because the integration runs on the server. The status card can show “will be off in X” . If there is also an active schedule slot, the entity is turned off at the slot end (or at max runtime, whichever is earlier). When the entity is turned off (by anyone), the integration clears the “active button” state so the UI updates.
 
 ### Options and config updates
 
