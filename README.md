@@ -2,6 +2,8 @@
 
 Home Assistant custom integration for schedule management. **For the Lovelace UI you need** [**Homie Scheduler Cards**](https://github.com/positivecrash/homie-scheduler-cards).
 
+[![Open your Home Assistant instance and add the integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=homie_scheduler)
+
 ## Features
 
 - Schedule management for switch, input_boolean, light, fan, cover, and climate entities
