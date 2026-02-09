@@ -318,23 +318,8 @@ class SchedulerCoordinator:
         """Reload scheduler after config change (options, items, entity_max_runtime, active_buttons)."""
         _LOGGER.debug("Reloading scheduler for %s", self.entry.entry_id)
         
-        # Stop all existing max_runtime monitors (entity_max_runtime = time limit when turned on by button/manual)
-        for entity_id in list(self._max_runtime_timers.keys()):
-            self._stop_max_runtime_monitor(entity_id)
-        
-        # Restart max_runtime monitors for entities that are currently ON
-        # _start_max_runtime_monitor skips if entity has active slot (slot controls turn-off)
-        entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
-        for entity_id, max_minutes in entity_max_runtime.items():
-            if max_minutes > 0:
-                state = self.hass.states.get(entity_id)
-                if _entity_state_is_on(entity_id, state):
-                    _LOGGER.info(
-                        "Reloading max runtime monitor for %s (%d min)",
-                        entity_id,
-                        max_minutes
-                    )
-                    self._start_max_runtime_monitor(entity_id)
+        # Do not stop/restart max_runtime monitors — "Runs will be off" must not be touched by schedule toggle
+        # (only slot that is active at current time controls turn-off; max_runtime is for manual/button run)
 
         # Restore button turn-off timers from active_buttons (so they survive app close)
         self._restore_button_turn_off_timers()
@@ -1179,76 +1164,58 @@ class SchedulerCoordinator:
 
     def _start_max_runtime_monitor(self, entity_id: str) -> None:
         """Start monitoring max runtime for entity.
-        
+
         Skips if entity has active slot — slot controls turn-off, don't overwrite.
         """
         # Get max_runtime from options
         entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
         max_minutes = entity_max_runtime.get(entity_id)
-        
+
         _LOGGER.info("_start_max_runtime_monitor called for %s: max_minutes=%s", entity_id, max_minutes)
-        
+
         if not max_minutes or max_minutes <= 0:
             _LOGGER.info("No max_runtime configured for %s or <= 0, skipping monitor", entity_id)
             return  # No max runtime configured
-        
+
         # If entity has active slot, slot controls turn-off — don't overwrite _max_runtime_turn_off_times
         if self._entity_has_active_slot(entity_id):
             _LOGGER.debug("Entity %s has active slot — slot controls turn-off, skipping max_runtime", entity_id)
             return
-        
+
         # Validate entity
         if not self._validate_entity(entity_id):
             _LOGGER.warning("Entity validation failed for %s, skipping monitor", entity_id)
             return
-        
+
         # Cancel existing timer if any
         self._stop_max_runtime_monitor(entity_id)
-        
-        _LOGGER.info(
-            "Starting max runtime monitor for %s: will auto-shutoff in %d minutes",
-            entity_id,
-            max_minutes
-        )
-        
-        # Schedule auto-shutoff
+
+        _LOGGER.info("Starting max runtime monitor for %s: will auto-shutoff in %d min", entity_id, max_minutes)
+
         async def auto_shutoff(now):
             """Turn off entity after max runtime."""
             state = self.hass.states.get(entity_id)
             if _entity_state_is_on(entity_id, state):
-                _LOGGER.warning(
-                    "Max runtime reached for %s (%d minutes) - auto shutting off",
-                    entity_id,
-                    max_minutes
-                )
+                _LOGGER.warning("Max runtime reached for %s (%d min) - auto shutting off", entity_id, max_minutes)
                 domain = entity_id.split(".")[0] if "." in entity_id else "switch"
                 try:
-                    await self.hass.services.async_call(
-                        domain,
-                        "turn_off",
-                        {"entity_id": entity_id},
-                        blocking=True,
-                    )
+                    await self.hass.services.async_call(domain, "turn_off", {"entity_id": entity_id}, blocking=True)
                 except Exception as e:
                     _LOGGER.error("Failed to auto-shutoff %s: %s", entity_id, e)
-            
+
             # Clean up timer reference
             if entity_id in self._max_runtime_timers:
                 del self._max_runtime_timers[entity_id]
-        
-        # Schedule callback
+
         delay = timedelta(minutes=max_minutes)
         self._max_runtime_timers[entity_id] = async_call_later(
             self.hass,
             delay,
             auto_shutoff
         )
-        
-        # Store expected turn-off time for bridge sensor (so cards can show countdown)
-        import time
         turn_off_time_ms = int((time.time() + (max_minutes * 60)) * 1000)
         self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-        
+
         # Notify bridge sensor immediately so cards can update
         self.notify_listeners_immediate()
 

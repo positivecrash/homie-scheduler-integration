@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.6]
+
+### Fixed
+
+- "Runs will be off" countdown no longer resets when toggling schedule on/off; reload no longer stops or restarts max_runtime monitors
+
 ## [1.0.5]
 
 ### Changed
