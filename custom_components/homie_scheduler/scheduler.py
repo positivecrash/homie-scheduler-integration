@@ -11,7 +11,11 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_ON
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.storage import Store
 import homeassistant.util.dt as dt_util
+
+STORAGE_VERSION = 1
+STORAGE_KEY_LAST_RUNS_PREFIX = "homie_scheduler_last_runs"
 
 from .const import (
     CONF_ENTITY_MAX_RUNTIME,
@@ -24,7 +28,6 @@ from .const import (
     ITEM_SERVICE_START,
     ITEM_SERVICE_END,
     STORAGE_ACTIVE_BUTTONS,
-    STORAGE_ENTITIES_FOR_LAST_RUN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,6 +93,10 @@ class SchedulerCoordinator:
 
         # Last run per entity (for status card): {entity_id: {started_at_iso, ended_at_iso, duration_minutes}}
         self._entity_last_run: dict[str, dict[str, Any]] = {}
+        # Persist last runs so "Latest activity" survives HA restart
+        self._last_runs_store: Store[dict[str, dict[str, Any]]] = Store(
+            hass, STORAGE_VERSION, f"{STORAGE_KEY_LAST_RUNS_PREFIX}_{entry.entry_id}"
+        )
 
     @property
     def is_enabled(self) -> bool:
@@ -188,11 +195,29 @@ class SchedulerCoordinator:
         """Force immediate notification (e.g. after set_active_button so UI gets new active_buttons)."""
         self._do_notify_listeners()
 
+    async def _async_load_last_runs(self) -> None:
+        """Load persisted last runs so Latest activity survives HA restart."""
+        try:
+            data = await self._last_runs_store.async_load()
+            if data and isinstance(data, dict):
+                self._entity_last_run.update(data)
+                _LOGGER.debug("Loaded %d last run(s) from store", len(data))
+        except Exception as e:
+            _LOGGER.debug("Could not load last runs from store: %s", e)
+
+    async def _async_save_last_runs(self) -> None:
+        """Persist last runs to store."""
+        try:
+            await self._last_runs_store.async_save(dict(self._entity_last_run))
+        except Exception as e:
+            _LOGGER.warning("Could not save last runs to store: %s", e)
+
     async def async_start(self) -> None:
         """Start the scheduler."""
         _LOGGER.debug("Starting scheduler for %s", self.entry.entry_id)
         
         try:
+            await self._async_load_last_runs()
             # Get all unique entity_ids from items, entity_max_runtime, and active_buttons
             # (max_runtime: when turned on outside schedule; active_buttons: e.g. recirculation-only entities for last_run)
             entity_ids = set()
@@ -207,7 +232,7 @@ class SchedulerCoordinator:
             for entity_id in self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}):
                 if entity_id:
                     entity_ids.add(entity_id)
-            for entity_id in self.entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or []:
+            for entity_id in self._entity_last_run:
                 if entity_id:
                     entity_ids.add(entity_id)
             
@@ -366,6 +391,7 @@ class SchedulerCoordinator:
                     entity_state.pop("last_run_start", None)
                     self._entity_states[entity_id] = entity_state
                     self._notify_listeners()
+                    self.hass.async_create_task(self._async_save_last_runs())
             except Exception:
                 pass
 
@@ -438,8 +464,8 @@ class SchedulerCoordinator:
             entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
             max_runtime_entity_ids = {eid for eid, mins in entity_max_runtime.items() if eid and mins > 0}
             active_buttons_entity_ids = set(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}).keys())
-            entities_for_last_run = set(self.entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or [])
-            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids | active_buttons_entity_ids | entities_for_last_run
+            last_run_entity_ids = set(self._entity_last_run.keys())
+            current_entity_ids = set(items_by_entity.keys()) | max_runtime_entity_ids | active_buttons_entity_ids | last_run_entity_ids
             existing_entity_ids = set(self._cancel_state_listeners.keys())
             
             # Add listeners for new entities

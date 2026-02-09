@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.5]
+
+### Changed
+
+- Latest activity: single source of truth — `entity_last_run` in Store only; removed option `entities_for_last_run` from config entry
+- On startup we subscribe to entities from Store keys (`entity_last_run`); status card adds new entities via service `register_entity_for_last_run`
+- On HA restart: schedule and slot timers rebuilt from config; latest activity and active "run for" timers restored from Store/options
+
 ## [1.0.4]
 
 ### Changed

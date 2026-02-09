@@ -43,7 +43,6 @@ from .const import (
     SERVICE_CLEAR_ACTIVE_BUTTON,
     SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
     STORAGE_ACTIVE_BUTTONS,
-    STORAGE_ENTITIES_FOR_LAST_RUN,
     WEEKDAYS,
 )
 from .scheduler import SchedulerCoordinator
@@ -751,7 +750,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             _LOGGER.error("Error in handle_clear_active_button: %s", e, exc_info=True)
 
     async def handle_register_entity_for_last_run(call: ServiceCall) -> None:
-        """Register entity for Latest activity tracking (called by status card so external turn-on is recorded)."""
+        """Register entity for Latest activity tracking (add to entity_last_run so we listen and persist)."""
         try:
             entry_id = call.data.get(ATTR_ENTRY_ID)
             entity_id = call.data.get(ATTR_ENTITY_ID)
@@ -760,13 +759,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
             if not coordinator:
                 return
-            entry = coordinator.entry
-            current = list(entry.options.get(STORAGE_ENTITIES_FOR_LAST_RUN, []) or [])
-            if entity_id in current:
+            if entity_id in coordinator._entity_last_run:
                 return
-            current.append(entity_id)
-            new_options = {**entry.options, STORAGE_ENTITIES_FOR_LAST_RUN: current}
-            hass.config_entries.async_update_entry(entry, options=new_options)
+            coordinator._entity_last_run.setdefault(entity_id, {})
+            await coordinator._async_save_last_runs()
             try:
                 await coordinator.async_reload()
             except Exception as e:

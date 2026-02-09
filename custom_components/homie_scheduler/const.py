@@ -31,8 +31,6 @@ ITEM_SERVICE_END: Final = "service_end"  # Service to call when slot ends: {name
 STORAGE_ITEMS: Final = "items"
 STORAGE_ENABLED: Final = "enabled"
 STORAGE_ACTIVE_BUTTONS: Final = "active_buttons"  # Store active button states: {entity_id: {button_id, timer_end, duration}}
-STORAGE_ENTITIES_FOR_LAST_RUN: Final = "entities_for_last_run"  # Entity IDs to track for Latest activity (from status cards)
-
 # Duration validation
 # No hard limits - cards specify their own min/max via duration_range
 # Integration only validates that duration is a positive integer
