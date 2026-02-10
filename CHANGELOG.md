@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.7]
+
+### Changed
+
+- Max run time: single place — all turn-off times (slots, button, external) are capped by `_effective_turn_off_time()`;
+- Small Fix: latest activity time 
+
 ## [1.0.6]
 
 ### Fixed

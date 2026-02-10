@@ -661,8 +661,7 @@ class SchedulerCoordinator:
                             service_value,
                             blocking=True,
                         )
-                        # Store slot end time in _max_runtime_turn_off_times so status card can show countdown
-                        # Cap by entity_max_runtime if entity was already on (prev runtime + slot <= max)
+                        # Store slot end time in _max_runtime_turn_off_times; cap by max_runtime (single place)
                         now = dt_util.now()
                         active_items_for_entity = self._get_active_items_for_entity(items, now)
                         if active_items_for_entity:
@@ -670,7 +669,7 @@ class SchedulerCoordinator:
                             slot_ends = [t for t in slot_ends if t is not None]
                             if slot_ends:
                                 latest_end = max(slot_ends)
-                                actual_end = self._cap_turn_off_by_max_runtime(entity_id, latest_end)
+                                actual_end = self._effective_turn_off_time(entity_id, latest_end, entity_start=now)
                                 turn_off_time_ms = int(actual_end.timestamp() * 1000)
                                 self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
                                 # Notify listeners so bridge sensor updates
@@ -685,7 +684,7 @@ class SchedulerCoordinator:
                     slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
                     slot_ends = [t for t in slot_ends if t is not None]
                     slot_end = max(slot_ends) if slot_ends else None
-                    actual_end = self._cap_turn_off_by_max_runtime(entity_id, slot_end) if slot_end else None
+                    actual_end = self._effective_turn_off_time(entity_id, slot_end) if slot_end else None
                     if actual_end is not None and actual_end <= now:
                         actual_end = None
 
@@ -945,19 +944,23 @@ class SchedulerCoordinator:
         
         return None
     
-    def _cap_turn_off_by_max_runtime(self, entity_id: str, slot_end: datetime) -> datetime:
-        """turn_off = min(slot_end, entity_start + max_runtime). Cold start and overlap — one formula."""
+    def _effective_turn_off_time(
+        self, entity_id: str, proposed_end: datetime, entity_start: datetime | None = None
+    ) -> datetime:
+        """Single place: cap proposed_end by max_runtime from integration options.
+        Regardless of how the entity was turned on (slot, button, external), run never exceeds max_runtime.
+        entity_start: when the run started; if None, read from current switch state (only works if entity is on).
+        """
         entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
         max_minutes = entity_max_runtime.get(entity_id, 0)
         if max_minutes <= 0:
-            return slot_end
-        switch_state = self.hass.states.get(entity_id)
-        if not switch_state or not hasattr(switch_state, "last_changed") or not switch_state.last_changed:
-            return slot_end
-        if not _entity_state_is_on(entity_id, switch_state):
-            return slot_end
-        entity_start = dt_util.as_utc(switch_state.last_changed)
-        return min(slot_end, entity_start + timedelta(minutes=max_minutes))
+            return proposed_end
+        if entity_start is None:
+            switch_state = self.hass.states.get(entity_id)
+            if not switch_state or not _entity_state_is_on(entity_id, switch_state) or not getattr(switch_state, "last_changed", None):
+                return proposed_end
+            entity_start = dt_util.as_utc(switch_state.last_changed)
+        return min(proposed_end, entity_start + timedelta(minutes=max_minutes))
 
     def _calculate_next_transition_for_entity(
         self, items: list[dict[str, Any]], now: datetime, active_items: list[dict[str, Any]]
@@ -972,11 +975,14 @@ class SchedulerCoordinator:
         # Get entity_id from items
         entity_id = items[0].get(ITEM_ENTITY_ID) if items else None
         
-        # Add end times for currently active items — cap by max_runtime (slot duration wins, max_runtime caps)
+        # Add end times for currently active items — cap by max_runtime (single place)
+        switch_state = self.hass.states.get(entity_id) if entity_id else None
+        is_on = entity_id and switch_state and _entity_state_is_on(entity_id, switch_state)
+        run_start = dt_util.as_utc(switch_state.last_changed) if (is_on and switch_state and getattr(switch_state, "last_changed", None)) else now
         for item in active_items:
             next_end = self._calculate_item_end(item, now)
             if next_end and entity_id:
-                capped = self._cap_turn_off_by_max_runtime(entity_id, next_end)
+                capped = self._effective_turn_off_time(entity_id, next_end, entity_start=run_start)
                 candidates.append(capped)
         
         # Add max_runtime turn-off only when entity is on but NO active slot (manual/button turn-on)
