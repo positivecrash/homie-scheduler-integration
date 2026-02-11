@@ -17,6 +17,10 @@ DEFAULT_DURATION: Final = 30  # Default slot duration in minutes for set_items w
 # If switch turns ON within this window after scheduler called service_start, we skip max_runtime monitor (slot controls turn-off)
 SCHEDULER_TURN_ON_WINDOW_SECONDS: Final = 10
 
+# Recovery: after HA restart, in-memory timers are gone. If slot ended while HA was down, we turn off the entity
+# only if "now" is within this many seconds after the slot end (e.g. 10 min). Longer gap = no auto turn-off.
+RECOVERY_AFTER_SLOT_END_SECONDS: Final = 600  # 10 min
+
 # Schedule item keys
 ITEM_ID: Final = "id"
 ITEM_ENTITY_ID: Final = "entity_id"  # Entity this item controls

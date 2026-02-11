@@ -7,6 +7,7 @@ import re
 import time
 from typing import Any
 
+from homeassistant.components.recorder import history as recorder_history
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import SERVICE_TURN_OFF, SERVICE_TURN_ON, STATE_ON
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
@@ -19,7 +20,7 @@ STORAGE_KEY_LAST_RUNS_PREFIX = "homie_scheduler_last_runs"
 
 from .const import (
     CONF_ENTITY_MAX_RUNTIME,
-    SCHEDULER_TURN_ON_WINDOW_SECONDS,
+    RECOVERY_AFTER_SLOT_END_SECONDS,
     ITEM_DURATION,
     ITEM_ENTITY_ID,
     ITEM_ENABLED,
@@ -34,18 +35,25 @@ _LOGGER = logging.getLogger(__name__)
 
 TIME_PATTERN = re.compile(r"^([0-1][0-9]|2[0-3]):([0-5][0-9])$")
 
-# Domains where state "off" means off; any other state is on (e.g. climate: heat, cool, auto)
-_DOMAINS_OFF_MEANS_OFF: frozenset[str] = frozenset({"climate"})
-# All other domains (switch, input_boolean, light, fan, cover, ...): state "on" means on
+# Domains supported by the integration (on/off from entity state)
+_SUPPORTED_DOMAINS: frozenset[str] = frozenset({
+    "switch", "input_boolean", "light", "fan", "cover", "climate", "water_heater",
+})
+# Subset: "off" = off, any other state = on (e.g. climate heat/cool, water_heater eco/electric)
+_SUPPORTED_DOMAINS_OFF_MEANS_OFF: frozenset[str] = frozenset({"climate", "water_heater"})
 
 
 def _entity_state_is_on(entity_id: str, state_obj: Any) -> bool:
-    """Return True if entity is considered 'on'. Works for switch, climate, input_boolean, light, etc."""
+    """Return True if entity is considered 'on'."""
     if state_obj is None or not getattr(state_obj, "state", None):
         return False
-    domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+    domain = entity_id.split(".")[0] if "." in entity_id else ""
+    if domain not in _SUPPORTED_DOMAINS:
+        return False
     state = str(state_obj.state).lower()
-    if domain in _DOMAINS_OFF_MEANS_OFF:
+    if state in ("unavailable", "unknown"):
+        return False
+    if domain in _SUPPORTED_DOMAINS_OFF_MEANS_OFF:
         return state != "off"
     return state == STATE_ON.lower()
 
@@ -160,11 +168,11 @@ class SchedulerCoordinator:
     def async_add_listener(self, listener: CALLBACK_TYPE) -> CALLBACK_TYPE:
         """Add a listener for state changes."""
         self._listeners.append(listener)
-        
+
         @callback
         def remove_listener() -> None:
             self._listeners.remove(listener)
-        
+
         return remove_listener
 
     @callback
@@ -212,6 +220,90 @@ class SchedulerCoordinator:
         except Exception as e:
             _LOGGER.warning("Could not save last runs to store: %s", e)
 
+    def _get_tracked_entity_ids_for_last_run(self) -> set[str]:
+        """Entity IDs we track for Latest activity (items, entity_max_runtime, active_buttons, already in store)."""
+        entity_ids = set()
+        for item in self.items:
+            eid = item.get(ITEM_ENTITY_ID)
+            if eid:
+                entity_ids.add(eid)
+        entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {}) or {}
+        for eid in entity_max_runtime:
+            if eid and entity_max_runtime.get(eid, 0) > 0:
+                entity_ids.add(eid)
+        for eid in self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}) or {}:
+            if eid:
+                entity_ids.add(eid)
+        for eid in self._entity_last_run:
+            if eid:
+                entity_ids.add(eid)
+        return entity_ids
+
+    def _last_run_from_states(self, entity_id: str, states: list) -> bool:
+        """Find last on->off in states (chronological), set _entity_last_run[entity_id]. Return True if set."""
+        if not states:
+            return False
+        for i in range(len(states) - 1, 0, -1):
+            st_end = states[i]
+            st_start = states[i - 1]
+            if not _entity_state_is_on(entity_id, st_end) and _entity_state_is_on(entity_id, st_start):
+                try:
+                    ended_at = dt_util.as_utc(st_end.last_changed)
+                    started_at = dt_util.as_utc(st_start.last_changed)
+                    duration_seconds = max(0, int((ended_at - started_at).total_seconds()))
+                    duration_minutes = duration_seconds // 60
+                    self._entity_last_run[entity_id] = {
+                        "started_at": started_at.isoformat(),
+                        "ended_at": ended_at.isoformat(),
+                        "duration_minutes": duration_minutes,
+                        "duration_seconds": duration_seconds,
+                    }
+                    return True
+                except Exception:
+                    pass
+                break
+        return False
+
+    async def _async_refresh_last_runs_from_history(self) -> None:
+        """Refresh last_run from recorder history once at integration start.
+        For each tracked entity request history 7d then 30d; take last on->off (started_at, ended_at, duration).
+        """
+        from homeassistant.components.recorder import get_instance
+
+        entity_ids = self._get_tracked_entity_ids_for_last_run()
+        if not entity_ids:
+            return
+        now = dt_util.utcnow()
+        instance = get_instance(self.hass)
+
+        def _state_changes(eid: str, start_ts: datetime, end_ts: datetime):
+            return recorder_history.state_changes_during_period(
+                self.hass,
+                start_ts,
+                end_ts,
+                eid,
+                include_start_time_state=True,
+                no_attributes=True,
+            ).get(eid, [])
+
+        updated = False
+        for entity_id in entity_ids:
+            try:
+                start_7 = now - timedelta(days=7)
+                states = await instance.async_add_executor_job(_state_changes, entity_id, start_7, now)
+                if self._last_run_from_states(entity_id, states):
+                    updated = True
+                    continue
+                start_30 = now - timedelta(days=30)
+                states = await instance.async_add_executor_job(_state_changes, entity_id, start_30, now)
+                if self._last_run_from_states(entity_id, states):
+                    updated = True
+            except Exception as e:
+                _LOGGER.debug("History refresh for %s: %s", entity_id, e)
+        if updated:
+            self.notify_listeners_immediate()  # So bridge/card get latest activity right away (no throttle)
+            await self._async_save_last_runs()
+
     async def async_start(self) -> None:
         """Start the scheduler."""
         _LOGGER.debug("Starting scheduler for %s", self.entry.entry_id)
@@ -250,13 +342,6 @@ class SchedulerCoordinator:
                         self._entity_states[entity_id] = {
                             "scheduler_controlled_on": False,
                         }
-                        # If entity is already on (e.g. after HA restart), set last_run_start so we record latest run when it turns off
-                        state = self.hass.states.get(entity_id)
-                        if state and _entity_state_is_on(entity_id, state):
-                            try:
-                                self._entity_states[entity_id]["last_run_start"] = dt_util.as_utc(state.last_changed)
-                            except Exception:
-                                pass
                     except Exception as e:
                         _LOGGER.error("Error setting up listener for %s: %s", entity_id, e)
             
@@ -284,6 +369,8 @@ class SchedulerCoordinator:
             _start_monitors_for_on_entities()
             # Also run after 5s: restore_state may apply after integration startup
             async_call_later(self.hass, 5.0, lambda _: _start_monitors_for_on_entities())
+            # Latest activity: one refresh from history at start only
+            await self._async_refresh_last_runs_from_history()
         except Exception as e:
             _LOGGER.error("Error starting scheduler: %s", e, exc_info=True)
             # Don't re-raise - allow HA to continue
@@ -332,54 +419,45 @@ class SchedulerCoordinator:
         new_state = event.data.get("new_state")
         old_state = event.data.get("old_state")
         
-        if new_state is None or old_state is None:
+        if new_state is None:
             return
-        
         entity_id = new_state.entity_id
-        
-        # Check if entity was turned on
-        if _entity_state_is_on(entity_id, new_state) and not _entity_state_is_on(entity_id, old_state):
-            _LOGGER.info("Entity %s turned ON (old=%s, new=%s)", entity_id, old_state.state, new_state.state)
+        old_was_on = _entity_state_is_on(entity_id, old_state) if old_state else False
+        new_is_on = _entity_state_is_on(entity_id, new_state)
+
+        # Entity turned on (including when old_state was None — e.g. after HA restart or first event)
+        if new_is_on and not old_was_on:
+            _LOGGER.info("Entity %s turned ON (old=%s, new=%s)", entity_id, old_state.state if old_state else "?", new_state.state)
             
-            # Clear any "blocked until" window when user/scheduler turns it on; store run start for "last run"
             entity_state = self._entity_states.get(entity_id, {})
             if entity_state.get("blocked_until"):
                 entity_state["blocked_until"] = None
-            try:
-                entity_state["last_run_start"] = dt_util.as_utc(new_state.last_changed)
-            except Exception:
-                pass
             self._entity_states[entity_id] = entity_state
 
-            # Start max_runtime only when no active slot — slot controls turn-off
-            # _start_max_runtime_monitor also checks _entity_has_active_slot (safety net)
             _LOGGER.info("Entity %s turned ON, checking max_runtime...", entity_id)
             self._start_max_runtime_monitor(entity_id)
         
-        if not _entity_state_is_on(entity_id, new_state):
+        if not new_is_on:
             self._stop_max_runtime_monitor(entity_id)
             self.hass.async_create_task(self._async_clear_active_button_on_turn_off(entity_id))
-            # Record last run (start → end, duration) for status card
-            try:
-                entity_state = self._entity_states.get(entity_id, {})
-                start_dt = entity_state.get("last_run_start")
-                if start_dt is not None:
-                    end_dt = dt_util.as_utc(new_state.last_changed)
-                    duration_seconds = max(0, int((end_dt - start_dt).total_seconds()))
+            # Latest activity: update from state_changed (same event source as Logbook). Only this entity_id is tracked;
+            # if an external button toggles another entity (e.g. input_boolean), add that entity to scheduler config.
+            if old_state and old_was_on:
+                try:
+                    started_at = dt_util.as_utc(old_state.last_changed)
+                    ended_at = dt_util.as_utc(new_state.last_changed)
+                    duration_seconds = max(0, int((ended_at - started_at).total_seconds()))
                     duration_minutes = duration_seconds // 60
                     self._entity_last_run[entity_id] = {
-                        "started_at": start_dt.isoformat(),
-                        "ended_at": end_dt.isoformat(),
+                        "started_at": started_at.isoformat(),
+                        "ended_at": ended_at.isoformat(),
                         "duration_minutes": duration_minutes,
                         "duration_seconds": duration_seconds,
                     }
-                    entity_state.pop("last_run_start", None)
-                    self._entity_states[entity_id] = entity_state
-                    self._notify_listeners()
+                    self.notify_listeners_immediate()
                     self.hass.async_create_task(self._async_save_last_runs())
-            except Exception:
-                pass
-
+                except Exception as e:
+                    _LOGGER.debug("Last run from event for %s: %s", entity_id, e)
             # If it was turned off while a schedule slot is currently active,
             # block re-enabling until the slot ends (prevents "stuck ON" and
             # enforces max_runtime priority over schedule).
@@ -463,37 +541,22 @@ class SchedulerCoordinator:
                 self._entity_states[entity_id] = self._entity_states.get(entity_id) or {
                     "scheduler_controlled_on": False,
                 }
-                # If entity is already on (e.g. recirculation just started), set last_run_start so we record last_run when it turns off
+            
+            # Remove listeners for entities no longer in config; turn off if currently on (we controlled by schedule)
+            for entity_id in existing_entity_ids - current_entity_ids:
                 state = self.hass.states.get(entity_id)
                 if state and _entity_state_is_on(entity_id, state):
-                    try:
-                        self._entity_states[entity_id]["last_run_start"] = dt_util.as_utc(state.last_changed)
-                    except Exception:
-                        pass
-            
-            # Remove listeners only for entities no longer in items AND no longer in max_runtime
-            for entity_id in existing_entity_ids - current_entity_ids:
+                    domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+                    if self.hass.services.has_service(domain, "turn_off"):
+                        _LOGGER.info("Entity %s removed from schedule, turning off", entity_id)
+                        self.hass.async_create_task(
+                            self.hass.services.async_call(domain, "turn_off", {"entity_id": entity_id}, blocking=True)
+                        )
                 if entity_id in self._cancel_state_listeners:
                     self._cancel_state_listeners[entity_id]()
                     del self._cancel_state_listeners[entity_id]
                 if entity_id in self._entity_states:
                     del self._entity_states[entity_id]
-            
-            # Ensure last_run_start is set for any entity that is currently ON (e.g. after reload
-            # or when entity was on before we added the listener). Otherwise we miss recording
-            # "latest run" when the user turns it off.
-            for entity_id in current_entity_ids:
-                es = self._entity_states.get(entity_id)
-                if es is None:
-                    continue
-                if es.get("last_run_start") is not None:
-                    continue
-                state = self.hass.states.get(entity_id)
-                if state and _entity_state_is_on(entity_id, state):
-                    try:
-                        es["last_run_start"] = dt_util.as_utc(state.last_changed)
-                    except Exception:
-                        pass
             
             # Process each entity independently: enforce state and set per-entity timer
             for entity_id, entity_items in items_by_entity.items():
@@ -732,10 +795,15 @@ class SchedulerCoordinator:
                 
             elif not should_be_on and is_on:
                 # Need to turn off - check if we control it (or recover: just past slot end)
+                now = dt_util.now()
                 _LOGGER.info("Entity %s should be off (schedule inactive), is_on=%s, scheduler_controlled=%s",
                            entity_id, is_on, scheduler_controlled)
-                # Recovery: if we're within 2 min after a slot end, assume timer was lost (e.g. reload) and turn off
-                just_past_slot_end = not scheduler_controlled and self._is_just_after_slot_end(items, now, 120)
+                # Recovery: after HA restart/reload all timers are lost. If the slot already ended while we were down,
+                # we're "just past slot end". Within RECOVERY_AFTER_SLOT_END (e.g. 10 min) we still turn off the entity.
+                # If the server was off longer than 10 min after the slot end, we don't turn off (entity stays on).
+                just_past_slot_end = not scheduler_controlled and self._is_just_after_slot_end(
+                    items, now, RECOVERY_AFTER_SLOT_END_SECONDS
+                )
                 if scheduler_controlled or just_past_slot_end:
                     if just_past_slot_end:
                         _LOGGER.info("Entity %s: recovery turn-off (just past slot end, scheduler_controlled was False)",
@@ -1085,9 +1153,11 @@ class SchedulerCoordinator:
         return None
 
     def _is_just_after_slot_end(
-        self, items: list[dict[str, Any]], now: datetime, window_seconds: int = 120
+        self, items: list[dict[str, Any]], now: datetime, window_seconds: int | None = None
     ) -> bool:
         """Return True if now is within window_seconds after any slot's end (for recovery when timer was lost)."""
+        if window_seconds is None:
+            window_seconds = RECOVERY_AFTER_SLOT_END_SECONDS
         for item in items:
             if not item.get(ITEM_ENABLED, True):
                 continue
@@ -1196,7 +1266,30 @@ class SchedulerCoordinator:
         # Cancel existing timer if any
         self._stop_max_runtime_monitor(entity_id)
 
-        _LOGGER.info("Starting max runtime monitor for %s: will auto-shutoff in %d min", entity_id, max_minutes)
+        # After restart we don't know when the entity was turned on — use state.last_changed so max_runtime is respected
+        switch_state = self.hass.states.get(entity_id)
+        run_start = None
+        if switch_state and getattr(switch_state, "last_changed", None):
+            run_start = dt_util.as_utc(switch_state.last_changed)
+        now = dt_util.utcnow()
+        elapsed_minutes = int((now - run_start).total_seconds() / 60) if run_start else 0
+        remaining_minutes = max(0, max_minutes - elapsed_minutes)
+
+        if remaining_minutes <= 0:
+            _LOGGER.info(
+                "Entity %s already on for %d min (max %d) — turning off now (e.g. after restart)",
+                entity_id, elapsed_minutes, max_minutes,
+            )
+            domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+            self.hass.async_create_task(
+                self.hass.services.async_call(domain, "turn_off", {"entity_id": entity_id}, blocking=True)
+            )
+            return
+
+        _LOGGER.info(
+            "Starting max runtime monitor for %s: auto-shutoff in %d min (already on %d min, max %d)",
+            entity_id, remaining_minutes, elapsed_minutes, max_minutes,
+        )
 
         async def auto_shutoff(now):
             """Turn off entity after max runtime."""
@@ -1213,13 +1306,13 @@ class SchedulerCoordinator:
             if entity_id in self._max_runtime_timers:
                 del self._max_runtime_timers[entity_id]
 
-        delay = timedelta(minutes=max_minutes)
+        delay = timedelta(minutes=remaining_minutes)
         self._max_runtime_timers[entity_id] = async_call_later(
             self.hass,
             delay,
             auto_shutoff
         )
-        turn_off_time_ms = int((time.time() + (max_minutes * 60)) * 1000)
+        turn_off_time_ms = int((time.time() + (remaining_minutes * 60)) * 1000)
         self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
 
         # Notify bridge sensor immediately so cards can update
