@@ -127,7 +127,7 @@ SERVICE_UPDATE_ITEM_SCHEMA = vol.Schema(
             vol.Required("name"): cv.string,
             vol.Required("value"): dict,
         }),
-        vol.Optional("title"): cv.string,  # Optional title for the slot
+        vol.Optional("title"): vol.Any(cv.string, None),  # Optional; None/empty = no custom name
     }
 )
 
@@ -368,10 +368,10 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             # Add service_end only if provided
             if service_end:
                 new_item[ITEM_SERVICE_END] = service_end
-            # Add title if provided
+            # Add title if provided (allow None/empty from frontend)
             title = call.data.get("title")
-            if title:
-                new_item["title"] = title
+            if title is not None and str(title).strip():
+                new_item["title"] = str(title).strip()
             # Add temporary flag if provided (for button-created slots that shouldn't be visible in UI)
             temporary_flag = call.data.get("temporary", False)
             _LOGGER.info("Received temporary flag: %s (type: %s)", temporary_flag, type(temporary_flag))
@@ -465,10 +465,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 updated_item[ITEM_SERVICE_END] = call.data[ITEM_SERVICE_END]
             if "title" in call.data:
                 title = call.data["title"]
-                if title:
-                    updated_item["title"] = title
+                if title is not None and str(title).strip():
+                    updated_item["title"] = str(title).strip()
                 elif "title" in updated_item:
-                    # Remove title if empty string provided
                     del updated_item["title"]
             
             # Validate
