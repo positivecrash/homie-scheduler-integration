@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.8]
+
+### Changed
+
+- Entity state: `unavailable` and `unknown` are treated as off; supported domains (switch, climate, water_heater) with "off means off" (climate, water_heater) for correct on/off detection.
+- When an entity is removed from the schedule (slot deleted), integration calls `turn_off` for that entity if the domain supports it.
+- Recovery after slot end: `RECOVERY_AFTER_SLOT_END_SECONDS` (10 min) — if HA was down when a slot ended, we still turn off the entity if "now" is within this window after slot end.
+- Max runtime after HA restart: use `state.last_changed` to compute remaining time; if remaining ≤ 0, turn off immediately.
+- Latest activity (last run): updated from `state_changed` when entity turns off (started_at/ended_at from old_state/new_state.last_changed); history-based refresh only on HA load.
+
+### Fixed
+
+- In `_async_enforce_switch_state` (should be off, is on): use fresh `now = dt_util.now()` before comparisons to avoid using stale time.
+
 ## [1.0.7]
 
 ### Changed
