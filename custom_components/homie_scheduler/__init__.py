@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 config_entry_id=entry.entry_id,
                 identifiers={(DOMAIN, entry.entry_id)},
                 name=entry.data.get(CONF_NAME, entry.title),
-                manufacturer="Custom",
+                manufacturer="Pinout",
                 model="Scheduler",
             )
         except Exception as e:
