@@ -42,6 +42,7 @@ from .const import (
     SERVICE_SET_ACTIVE_BUTTON,
     SERVICE_CLEAR_ACTIVE_BUTTON,
     SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
+    SERVICE_ENABLE_ALL_SLOTS,
     STORAGE_ACTIVE_BUTTONS,
     WEEKDAYS,
 )
@@ -147,6 +148,12 @@ SERVICE_SET_ENABLED_SCHEMA = vol.Schema(
 )
 
 SERVICE_TOGGLE_ENABLED_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTRY_ID): cv.string,
+    }
+)
+
+SERVICE_ENABLE_ALL_SLOTS_SCHEMA = vol.Schema(
     {
         vol.Required(ATTR_ENTRY_ID): cv.string,
     }
@@ -594,6 +601,27 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as e:
             _LOGGER.error("Error in handle_set_enabled: %s", e, exc_info=True)
 
+    async def handle_enable_all_slots(call: ServiceCall) -> None:
+        """Enable all schedule slots for the given entry (e.g. from a scene after switch.turn_on)."""
+        try:
+            entry_id = call.data[ATTR_ENTRY_ID]
+            coordinator = hass.data[DOMAIN].get(entry_id)
+            if not coordinator:
+                _LOGGER.error("Entry %s not found", entry_id)
+                return
+            entry = coordinator.entry
+            items = list(entry.options.get("items", []))
+            new_items = [{**item, ITEM_ENABLED: True} for item in items]
+            new_options = {**entry.options, "items": new_items}
+            hass.config_entries.async_update_entry(entry, options=new_options)
+            try:
+                await coordinator.async_reload()
+            except Exception as e:
+                _LOGGER.error("Error reloading coordinator: %s", e)
+            _LOGGER.info("Enabled all slots for %s", entry_id)
+        except Exception as e:
+            _LOGGER.error("Error in handle_enable_all_slots: %s", e, exc_info=True)
+
     async def handle_toggle_enabled(call: ServiceCall) -> None:
         """Handle toggle_enabled service call."""
         try:
@@ -886,6 +914,17 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     try:
         hass.services.async_register(
             DOMAIN,
+            SERVICE_ENABLE_ALL_SLOTS,
+            handle_enable_all_slots,
+            schema=SERVICE_ENABLE_ALL_SLOTS_SCHEMA,
+        )
+        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_ENABLE_ALL_SLOTS)
+    except Exception as e:
+        _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_ENABLE_ALL_SLOTS, e)
+
+    try:
+        hass.services.async_register(
+            DOMAIN,
             SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
             handle_register_entity_for_last_run,
             schema=SERVICE_REGISTER_ENTITY_FOR_LAST_RUN_SCHEMA,
@@ -908,6 +947,7 @@ async def async_unload_services(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMAIN, SERVICE_DELETE_ITEM)
         hass.services.async_remove(DOMAIN, SERVICE_SET_ENABLED)
         hass.services.async_remove(DOMAIN, SERVICE_TOGGLE_ENABLED)
+        hass.services.async_remove(DOMAIN, SERVICE_ENABLE_ALL_SLOTS)
         hass.services.async_remove(DOMAIN, SERVICE_SET_ACTIVE_BUTTON)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON)
         hass.services.async_remove(DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN)

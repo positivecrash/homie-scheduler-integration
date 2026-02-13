@@ -178,3 +178,14 @@ toggle_enabled:
       required: true
       selector:
         text:
+
+enable_all_slots:
+  name: Enable all slots
+  description: Enable all schedule slots for this scheduler (e.g. call after switch.turn_on in a scene)
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:

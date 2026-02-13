@@ -52,6 +52,7 @@ SERVICE_TOGGLE_ENABLED: Final = "toggle_enabled"
 SERVICE_SET_ACTIVE_BUTTON: Final = "set_active_button"
 SERVICE_CLEAR_ACTIVE_BUTTON: Final = "clear_active_button"
 SERVICE_REGISTER_ENTITY_FOR_LAST_RUN: Final = "register_entity_for_last_run"
+SERVICE_ENABLE_ALL_SLOTS: Final = "enable_all_slots"
 
 # Attributes
 ATTR_ENTRY_ID: Final = "entry_id"

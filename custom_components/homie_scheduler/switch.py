@@ -71,7 +71,7 @@ class SchedulerSwitch(SwitchEntity):
         return "mdi:calendar-clock" if self.is_on else "mdi:calendar-remove"
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn the switch on."""
+        """Turn the switch on (slots keep their current state; use enable_all_slots service to enable all)."""
         _LOGGER.debug("Enabling scheduler for %s", self._entry.entry_id)
         
         new_options = {**self._entry.options, "enabled": True}
