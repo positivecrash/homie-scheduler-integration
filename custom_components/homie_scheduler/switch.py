@@ -72,8 +72,6 @@ class SchedulerSwitch(SwitchEntity):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on (slots keep their current state; use enable_all_slots service to enable all)."""
-        _LOGGER.debug("Enabling scheduler for %s", self._entry.entry_id)
-        
         new_options = {**self._entry.options, "enabled": True}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
         # Soft update: reload coordinator without full entry reload
@@ -84,8 +82,6 @@ class SchedulerSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
-        _LOGGER.debug("Disabling scheduler for %s", self._entry.entry_id)
-        
         new_options = {**self._entry.options, "enabled": False}
         self.hass.config_entries.async_update_entry(self._entry, options=new_options)
         # Soft update: reload coordinator without full entry reload

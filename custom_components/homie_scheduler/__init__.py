@@ -22,8 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Scheduler from a config entry."""
-    _LOGGER.debug("Setting up Scheduler entry: %s", entry.entry_id)
-
     if not await async_migrate_entry(hass, entry):
         _LOGGER.error("Migration failed for entry %s", entry.entry_id)
         return False
@@ -78,7 +76,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # options save; services (set_items, set_active_button, etc.) call async_reload() after updating
         # options so the coordinator picks up new values. See README "Options and config updates".
 
-        _LOGGER.info("Scheduler entry %s setup completed", entry.entry_id)
         return True
         
     except Exception as e:
@@ -92,8 +89,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    _LOGGER.debug("Unloading Scheduler entry: %s", entry.entry_id)
-
     try:
         # Stop coordinator if it exists
         if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:

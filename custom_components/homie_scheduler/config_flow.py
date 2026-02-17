@@ -77,29 +77,21 @@ class SchedulerOptionsFlow(config_entries.OptionsFlow):
             entity_id = user_input.get("boiler_entity")
             max_time = user_input.get("boiler_time", 0)
             
-            # Log for debugging
-            _LOGGER.warning(f"[CONFIG_FLOW] Options save: entity_id={entity_id}, max_time={max_time}, type={type(entity_id)}")
-            
             # Check entity first - if empty, always remove settings
             if entity_id is None or not isinstance(entity_id, str) or not entity_id.strip():
                 # Entity is empty - remove all boiler settings
                 entity_max_runtime = {}
-                _LOGGER.warning(f"[CONFIG_FLOW] Entity is empty - removing boiler config")
             elif max_time <= 0:
                 # Entity exists but time = 0 - also remove
                 entity_max_runtime = {}
-                _LOGGER.warning(f"[CONFIG_FLOW] Time is 0 - removing boiler config for {entity_id}")
             else:
                 # Valid entity and time > 0 - save
                 entity_max_runtime[entity_id] = max_time
-                _LOGGER.warning(f"[CONFIG_FLOW] Saving boiler: {entity_id} -> {max_time} min")
             
             # Preserve items and enabled state
             current_options = self.config_entry.options
             new_options = dict(current_options)
             new_options[CONF_ENTITY_MAX_RUNTIME] = entity_max_runtime
-            
-            _LOGGER.warning(f"[CONFIG_FLOW] Final entity_max_runtime: {entity_max_runtime}")
             
             self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data=new_options)
@@ -111,17 +103,12 @@ class SchedulerOptionsFlow(config_entries.OptionsFlow):
         # Get current settings
         entity_max_runtime = current_options.get(CONF_ENTITY_MAX_RUNTIME, {})
         
-        _LOGGER.warning(f"[CONFIG_FLOW] Loading form: entity_max_runtime={entity_max_runtime}")
-        
         # Get first boiler (we only support one now)
         boiler_entity = None
         boiler_time = 120
         if entity_max_runtime:
             boiler_entity = list(entity_max_runtime.keys())[0]
             boiler_time = entity_max_runtime[boiler_entity]
-            _LOGGER.warning(f"[CONFIG_FLOW] Found boiler: {boiler_entity} -> {boiler_time} min")
-        else:
-            _LOGGER.warning("[CONFIG_FLOW] No boiler configured")
         
         # Build schema with single boiler
         schema_dict = {}

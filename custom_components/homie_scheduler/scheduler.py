@@ -209,9 +209,8 @@ class SchedulerCoordinator:
             data = await self._last_runs_store.async_load()
             if data and isinstance(data, dict):
                 self._entity_last_run.update(data)
-                _LOGGER.debug("Loaded %d last run(s) from store", len(data))
-        except Exception as e:
-            _LOGGER.debug("Could not load last runs from store: %s", e)
+        except Exception:
+            pass
 
     async def _async_save_last_runs(self) -> None:
         """Persist last runs to store."""
@@ -298,16 +297,14 @@ class SchedulerCoordinator:
                 states = await instance.async_add_executor_job(_state_changes, entity_id, start_30, now)
                 if self._last_run_from_states(entity_id, states):
                     updated = True
-            except Exception as e:
-                _LOGGER.debug("History refresh for %s: %s", entity_id, e)
+            except Exception:
+                pass
         if updated:
             self.notify_listeners_immediate()  # So bridge/card get latest activity right away (no throttle)
             await self._async_save_last_runs()
 
     async def async_start(self) -> None:
         """Start the scheduler."""
-        _LOGGER.debug("Starting scheduler for %s", self.entry.entry_id)
-        
         try:
             await self._async_load_last_runs()
             # Get all unique entity_ids from items, entity_max_runtime, and active_buttons
@@ -359,11 +356,6 @@ class SchedulerCoordinator:
                     if max_minutes > 0:
                         state = self.hass.states.get(entity_id)
                         if _entity_state_is_on(entity_id, state):
-                            _LOGGER.info(
-                                "Entity %s is ON - starting max runtime monitor (%d min)",
-                                entity_id,
-                                max_minutes,
-                            )
                             self._start_max_runtime_monitor(entity_id)
 
             _start_monitors_for_on_entities()
@@ -377,8 +369,6 @@ class SchedulerCoordinator:
 
     async def async_stop(self) -> None:
         """Stop the scheduler."""
-        _LOGGER.debug("Stopping scheduler for %s", self.entry.entry_id)
-        
         # Cancel all per-entity timers
         for entity_id in list(self._entity_cancel_timers.keys()):
             cancel = self._entity_cancel_timers.pop(entity_id, None)
@@ -403,8 +393,6 @@ class SchedulerCoordinator:
 
     async def async_reload(self) -> None:
         """Reload scheduler after config change (options, items, entity_max_runtime, active_buttons)."""
-        _LOGGER.debug("Reloading scheduler for %s", self.entry.entry_id)
-        
         # Do not stop/restart max_runtime monitors — "Runs will be off" must not be touched by schedule toggle
         # (only slot that is active at current time controls turn-off; max_runtime is for manual/button run)
 
@@ -427,14 +415,10 @@ class SchedulerCoordinator:
 
         # Entity turned on (including when old_state was None — e.g. after HA restart or first event)
         if new_is_on and not old_was_on:
-            _LOGGER.info("Entity %s turned ON (old=%s, new=%s)", entity_id, old_state.state if old_state else "?", new_state.state)
-            
             entity_state = self._entity_states.get(entity_id, {})
             if entity_state.get("blocked_until"):
                 entity_state["blocked_until"] = None
             self._entity_states[entity_id] = entity_state
-
-            _LOGGER.info("Entity %s turned ON, checking max_runtime...", entity_id)
             self._start_max_runtime_monitor(entity_id)
         
         if not new_is_on:
@@ -456,8 +440,8 @@ class SchedulerCoordinator:
                     }
                     self.notify_listeners_immediate()
                     self.hass.async_create_task(self._async_save_last_runs())
-                except Exception as e:
-                    _LOGGER.debug("Last run from event for %s: %s", entity_id, e)
+                except Exception:
+                    pass
             # If it was turned off while a schedule slot is currently active,
             # block re-enabling until the slot ends (prevents "stuck ON" and
             # enforces max_runtime priority over schedule).
@@ -476,16 +460,8 @@ class SchedulerCoordinator:
                         entity_state = self._entity_states.get(entity_id, {"scheduler_controlled_on": False})
                         entity_state["blocked_until"] = blocked_until
                         self._entity_states[entity_id] = entity_state
-                        _LOGGER.info(
-                            "Entity %s turned off during active slot; blocking re-enable until %s",
-                            entity_id,
-                            blocked_until.isoformat(),
-                        )
-            except Exception as e:
-                _LOGGER.debug("Failed to set blocked_until for %s: %s", entity_id, e)
-            
-            if entity_id in self._entity_states and self._entity_states[entity_id].get("scheduler_controlled_on"):
-                _LOGGER.debug("Switch %s turned off, resetting controlled flag", entity_id)
+            except Exception:
+                pass
             if entity_id in self._entity_states:
                 self._entity_states[entity_id]["scheduler_controlled_on"] = False
 
@@ -504,7 +480,6 @@ class SchedulerCoordinator:
             self._entity_next_transition.clear()
             
             if not self.is_enabled:
-                _LOGGER.debug("Scheduler disabled, no rescheduling")
                 self._notify_listeners()
                 return
             
@@ -548,7 +523,6 @@ class SchedulerCoordinator:
                 if state and _entity_state_is_on(entity_id, state):
                     domain = entity_id.split(".")[0] if "." in entity_id else "switch"
                     if self.hass.services.has_service(domain, "turn_off"):
-                        _LOGGER.info("Entity %s removed from schedule, turning off", entity_id)
                         self.hass.async_create_task(
                             self.hass.services.async_call(domain, "turn_off", {"entity_id": entity_id}, blocking=True)
                         )
@@ -574,7 +548,6 @@ class SchedulerCoordinator:
                     self._entity_next_transition[entity_id] = next_transition
                     
                     if delay <= 0:
-                        _LOGGER.debug("Entity %s transition time has passed, triggering immediately", entity_id)
                         self.hass.async_create_task(self._async_handle_entity_transition(entity_id))
                     elif delay < 1.0:
                         self._entity_cancel_timers[entity_id] = async_call_later(
@@ -584,8 +557,6 @@ class SchedulerCoordinator:
                         self._entity_cancel_timers[entity_id] = async_call_later(
                             self.hass, delay, self._make_entity_transition_callback(entity_id)
                         )
-                else:
-                    _LOGGER.debug("Entity %s: no next transition", entity_id)
             
             # Notify listeners (entities)
             self._notify_listeners()
@@ -650,19 +621,9 @@ class SchedulerCoordinator:
                                 at_new_slot_start = True
                                 break
                         if at_new_slot_start:
-                            _LOGGER.info(
-                                "New slot start for %s — clearing blocked_until so boiler can turn on",
-                                entity_id,
-                            )
                             entity_state["blocked_until"] = None
                             self._entity_states[entity_id] = entity_state
                         else:
-                            _LOGGER.debug(
-                                "Not turning on %s (blocked_until=%s, now=%s)",
-                                entity_id,
-                                blocked_until.isoformat(),
-                                now.isoformat(),
-                            )
                             return
                     else:
                         # Block expired, clear it
@@ -692,14 +653,9 @@ class SchedulerCoordinator:
                 if not is_on:
                     # On cold start (after HA restart), do not turn on - wait for next transition
                     if self._cold_start:
-                        _LOGGER.debug(
-                            "Skipping turn-on for %s (cold start after restart; will apply at next transition)",
-                            entity_id,
-                        )
                         return
                     # Need to turn on — entity was OFF before slot (cold start)
                     # Logic: turn off at slot_end; cap by max_runtime if slot_duration > max_runtime
-                    _LOGGER.info("Calling service_start for %s (schedule active, turning on)", entity_id)
                     try:
                         # Parse service name (format: "domain.service_name")
                         service_name = service_start["name"]
@@ -756,7 +712,6 @@ class SchedulerCoordinator:
                         if not scheduler_controlled:
                             entity_state["scheduler_controlled_on"] = True
                             self._entity_states[entity_id] = entity_state
-                        _LOGGER.info("Entity %s: turning off (slot overlap, max_runtime exceeded)", entity_id)
                         if not service_end:
                             service_end = {"name": f"{domain}.turn_off", "value": {"entity_id": entity_id}}
                         if service_end:
@@ -796,8 +751,6 @@ class SchedulerCoordinator:
             elif not should_be_on and is_on:
                 # Need to turn off - check if we control it (or recover: just past slot end)
                 now = dt_util.now()
-                _LOGGER.info("Entity %s should be off (schedule inactive), is_on=%s, scheduler_controlled=%s",
-                           entity_id, is_on, scheduler_controlled)
                 # Recovery: after HA restart/reload all timers are lost. If the slot already ended while we were down,
                 # we're "just past slot end". Within RECOVERY_AFTER_SLOT_END (e.g. 10 min) we still turn off the entity.
                 # If the server was off longer than 10 min after the slot end, we don't turn off (entity stays on).
@@ -805,14 +758,9 @@ class SchedulerCoordinator:
                     items, now, RECOVERY_AFTER_SLOT_END_SECONDS
                 )
                 if scheduler_controlled or just_past_slot_end:
-                    if just_past_slot_end:
-                        _LOGGER.info("Entity %s: recovery turn-off (just past slot end, scheduler_controlled was False)",
-                                   entity_id)
                     if not service_end:
                         service_end = {"name": f"{domain}.turn_off", "value": {"entity_id": entity_id}}
-                        _LOGGER.debug("No service_end for %s, using %s.turn_off fallback", entity_id, domain)
                     if service_end:
-                        _LOGGER.info("Calling service_end for %s (schedule inactive, was controlled)", entity_id)
                         try:
                             # Parse service name (format: "domain.service_name")
                             service_name = service_end["name"]
@@ -841,13 +789,10 @@ class SchedulerCoordinator:
                             if entity_id in self._max_runtime_turn_off_times:
                                 del self._max_runtime_turn_off_times[entity_id]
                                 self._notify_listeners()
-                            
-                            _LOGGER.debug("Successfully called service_end for %s", entity_id)
                         except Exception as e:
                             _LOGGER.error("Failed to call service_end for %s: %s", entity_id, e)
                     else:
                         # No service_end and not switch - just mark as not controlled
-                        _LOGGER.debug("No service_end for %s, marking as not controlled", entity_id)
                         entity_state["scheduler_controlled_on"] = False
                         self._entity_states[entity_id] = entity_state
                         
@@ -856,8 +801,7 @@ class SchedulerCoordinator:
                             del self._max_runtime_turn_off_times[entity_id]
                             self._notify_listeners()
                 else:
-                    # Not controlled by scheduler - don't turn off
-                    _LOGGER.debug("%s is on but not scheduler controlled, skipping turn off", entity_id)
+                    pass  # Not controlled by scheduler - don't turn off
         except Exception as e:
             _LOGGER.error("Error enforcing switch state for %s: %s", entity_id, e, exc_info=True)
             # Don't re-raise - allow scheduler to continue
@@ -871,10 +815,8 @@ class SchedulerCoordinator:
     async def _async_handle_entity_transition(self, entity_id: str) -> None:
         """Handle scheduled transition for a single entity (its timer fired)."""
         now = dt_util.now()
-        _LOGGER.debug("Transition fired for entity %s at %s", entity_id, now.isoformat())
         items_for_entity = [i for i in self.items if i.get(ITEM_ENTITY_ID) == entity_id]
         if not items_for_entity:
-            _LOGGER.debug("Entity %s has no items, skipping", entity_id)
             return
         active_items = self._get_active_items_for_entity(items_for_entity, now)
         should_be_on = len(active_items) > 0
@@ -1208,16 +1150,10 @@ class SchedulerCoordinator:
         Returns:
             True if entity is valid, False otherwise.
         """
-        _LOGGER.debug("Validating entity %s", entity_id)
-        
-        # Check if entity exists
         state = self.hass.states.get(entity_id)
         if state is None:
             _LOGGER.warning("Entity %s not found in hass.states", entity_id)
             return False
-        
-        _LOGGER.debug("Entity %s found, state=%s", entity_id, state.state)
-
         domain = entity_id.split(".")[0] if "." in entity_id else "switch"
         if not self.hass.services.has_service(domain, "turn_off"):
             _LOGGER.warning(
@@ -1225,8 +1161,6 @@ class SchedulerCoordinator:
                 entity_id, domain,
             )
             return False
-
-        _LOGGER.debug("Entity %s (domain=%s) passed validation", entity_id, domain)
         return True
 
     def _entity_has_active_slot(self, entity_id: str) -> bool:
@@ -1246,16 +1180,9 @@ class SchedulerCoordinator:
         # Get max_runtime from options
         entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
         max_minutes = entity_max_runtime.get(entity_id)
-
-        _LOGGER.info("_start_max_runtime_monitor called for %s: max_minutes=%s", entity_id, max_minutes)
-
         if not max_minutes or max_minutes <= 0:
-            _LOGGER.info("No max_runtime configured for %s or <= 0, skipping monitor", entity_id)
             return  # No max runtime configured
-
-        # If entity has active slot, slot controls turn-off — don't overwrite _max_runtime_turn_off_times
         if self._entity_has_active_slot(entity_id):
-            _LOGGER.debug("Entity %s has active slot — slot controls turn-off, skipping max_runtime", entity_id)
             return
 
         # Validate entity
@@ -1276,20 +1203,11 @@ class SchedulerCoordinator:
         remaining_minutes = max(0, max_minutes - elapsed_minutes)
 
         if remaining_minutes <= 0:
-            _LOGGER.info(
-                "Entity %s already on for %d min (max %d) — turning off now (e.g. after restart)",
-                entity_id, elapsed_minutes, max_minutes,
-            )
             domain = entity_id.split(".")[0] if "." in entity_id else "switch"
             self.hass.async_create_task(
                 self.hass.services.async_call(domain, "turn_off", {"entity_id": entity_id}, blocking=True)
             )
             return
-
-        _LOGGER.info(
-            "Starting max runtime monitor for %s: auto-shutoff in %d min (already on %d min, max %d)",
-            entity_id, remaining_minutes, elapsed_minutes, max_minutes,
-        )
 
         async def auto_shutoff(now):
             """Turn off entity after max runtime."""
@@ -1325,7 +1243,6 @@ class SchedulerCoordinator:
             entity_id: Entity ID to stop monitoring.
         """
         if entity_id in self._max_runtime_timers:
-            _LOGGER.debug("Stopping max runtime monitor for %s", entity_id)
             self._max_runtime_timers[entity_id]()
             del self._max_runtime_timers[entity_id]
         if entity_id in self._max_runtime_turn_off_times:

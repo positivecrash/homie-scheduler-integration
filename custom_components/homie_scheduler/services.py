@@ -220,7 +220,6 @@ def validate_item(item: dict[str, Any]) -> bool:
 
 async def async_setup_services(hass: HomeAssistant) -> None:
     """Set up services for scheduler."""
-    _LOGGER.info("Setting up scheduler services...")
 
     async def handle_set_items(call: ServiceCall) -> None:
         """Handle set_items service call."""
@@ -246,7 +245,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 # Set default duration if not provided
                 if ITEM_DURATION not in item:
                     item[ITEM_DURATION] = default_duration
-                    _LOGGER.debug("Set default duration %d for item", default_duration)
                 validate_item(item)
             
             # Generate IDs for items without one
@@ -265,14 +263,11 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Updated items for %s: %d items", entry_id, len(items))
         except Exception as e:
             _LOGGER.error("Error in handle_set_items: %s", e, exc_info=True)
 
     async def handle_add_item(call: ServiceCall) -> None:
         """Handle add_item service call."""
-        _LOGGER.info("handle_add_item called with data: %s", call.data)
         try:
             # Extract and validate data manually (more flexible than schema)
             entry_id = call.data.get(ATTR_ENTRY_ID)
@@ -356,10 +351,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 return
             
             service_end = call.data.get(ITEM_SERVICE_END)  # Optional - if not provided, slot will only turn on
-            
-            _LOGGER.info("Parsed data: entry_id=%s, entity_id=%s, time=%s, duration=%s, weekdays=%s, enabled=%s, service_start=%s, service_end=%s",
-                        entry_id, entity_id, time_str, duration if duration is not None else 'None (indefinite)', weekdays, enabled, service_start, service_end)
-            
+
             # Create new item
             new_item = {
                 ITEM_ID: str(uuid.uuid4()),
@@ -380,15 +372,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             if title is not None and str(title).strip():
                 new_item["title"] = str(title).strip()
             # Add temporary flag if provided (for button-created slots that shouldn't be visible in UI)
-            temporary_flag = call.data.get("temporary", False)
-            _LOGGER.info("Received temporary flag: %s (type: %s)", temporary_flag, type(temporary_flag))
-            if temporary_flag:
+            if call.data.get("temporary", False):
                 new_item["temporary"] = True
-                _LOGGER.info("Created temporary slot (hidden from UI): %s", new_item.get(ITEM_ID))
-            _LOGGER.info("New item created with keys: %s", list(new_item.keys()))
-            if "temporary" in new_item:
-                _LOGGER.info("New item temporary value: %s", new_item["temporary"])
-            
+
             # Validate item
             try:
                 validate_item(new_item)
@@ -414,9 +400,7 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Added item %s to %s", new_item[ITEM_ID], entry_id)
-            
+
         except Exception as e:
             _LOGGER.error("Error in handle_add_item: %s", e, exc_info=True)
             # Don't re-raise - just log the error to prevent HA crash
@@ -507,11 +491,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 if old_hvac != new_hvac:
                     changes.append(f"service_end.hvac_mode: {old_hvac} → {new_hvac}")
             
-            if changes:
-                _LOGGER.info("Updating item %s: %s", item_id, ", ".join(changes))
-            else:
-                _LOGGER.debug("No changes detected for item %s", item_id)
-            
             # Replace item
             items[item_index] = updated_item
             
@@ -524,8 +503,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Updated item %s in %s", item_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_update_item: %s", e, exc_info=True)
 
@@ -565,8 +542,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Deleted item %s from %s", item_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_delete_item: %s", e, exc_info=True)
 
@@ -596,8 +571,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Set enabled=%s for %s", enabled, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_set_enabled: %s", e, exc_info=True)
 
@@ -618,7 +591,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            _LOGGER.info("Enabled all slots for %s", entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_enable_all_slots: %s", e, exc_info=True)
 
@@ -650,8 +622,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 await coordinator.async_reload()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            
-            _LOGGER.info("Toggled enabled to %s for %s", new_enabled, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_toggle_enabled: %s", e, exc_info=True)
 
@@ -729,7 +699,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.notify_listeners_immediate()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            _LOGGER.info("Set active button %s for entity %s (entry %s)", button_id, entity_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_set_active_button: %s", e, exc_info=True)
 
@@ -772,7 +741,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
                 coordinator.notify_listeners_immediate()
             except Exception as e:
                 _LOGGER.error("Error reloading coordinator: %s", e)
-            _LOGGER.info("Cleared active button for entity %s (entry %s)", entity_id, entry_id)
         except Exception as e:
             _LOGGER.error("Error in handle_clear_active_button: %s", e, exc_info=True)
 
@@ -793,9 +761,9 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             try:
                 await coordinator.async_reload()
             except Exception as e:
-                _LOGGER.debug("Reload after register_entity_for_last_run: %s", e)
+                pass
         except Exception as e:
-            _LOGGER.debug("register_entity_for_last_run: %s", e)
+            pass
 
     # Service schemas for active buttons
     SERVICE_SET_ACTIVE_BUTTON_SCHEMA = vol.Schema(
@@ -830,7 +798,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_set_items,
             schema=SERVICE_SET_ITEMS_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_SET_ITEMS)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_SET_ITEMS, e)
     
@@ -841,7 +808,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_add_item,
             schema=SERVICE_ADD_ITEM_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_ADD_ITEM)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_ADD_ITEM, e)
     
@@ -852,7 +818,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_update_item,
             schema=SERVICE_UPDATE_ITEM_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_UPDATE_ITEM)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_UPDATE_ITEM, e)
     
@@ -863,7 +828,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_delete_item,
             schema=SERVICE_DELETE_ITEM_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_DELETE_ITEM)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_DELETE_ITEM, e)
     
@@ -874,7 +838,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_set_enabled,
             schema=SERVICE_SET_ENABLED_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_SET_ENABLED)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_SET_ENABLED, e)
     
@@ -885,7 +848,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_toggle_enabled,
             schema=SERVICE_TOGGLE_ENABLED_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_TOGGLE_ENABLED)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_TOGGLE_ENABLED, e)
     
@@ -896,7 +858,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_set_active_button,
             schema=SERVICE_SET_ACTIVE_BUTTON_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_SET_ACTIVE_BUTTON)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_SET_ACTIVE_BUTTON, e)
     
@@ -907,7 +868,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_clear_active_button,
             schema=SERVICE_CLEAR_ACTIVE_BUTTON_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON, e)
 
@@ -918,7 +878,6 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_enable_all_slots,
             schema=SERVICE_ENABLE_ALL_SLOTS_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_ENABLE_ALL_SLOTS)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_ENABLE_ALL_SLOTS, e)
 
@@ -929,16 +888,12 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             handle_register_entity_for_last_run,
             schema=SERVICE_REGISTER_ENTITY_FOR_LAST_RUN_SCHEMA,
         )
-        _LOGGER.debug("Registered service: %s.%s", DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN)
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN, e)
-    
-    _LOGGER.info("scheduler services registration completed")
 
 
 async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services."""
-    _LOGGER.debug("Unloading services")
     
     try:
         hass.services.async_remove(DOMAIN, SERVICE_SET_ITEMS)
