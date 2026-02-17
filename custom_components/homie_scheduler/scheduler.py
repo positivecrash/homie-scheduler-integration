@@ -58,6 +58,29 @@ def _entity_state_is_on(entity_id: str, state_obj: Any) -> bool:
     return state == STATE_ON.lower()
 
 
+def _climate_slot_mode_differs_from_current(
+    entity_id: str, state_obj: Any, service_start: dict[str, Any] | None
+) -> bool:
+    """Return True if entity is climate, slot has hvac_mode, and it differs from current hvac_mode (so we should apply slot).
+    For climate, the set mode is in attributes.hvac_mode (e.g. 'cool', 'heat'), not state (state is operation: 'cooling', 'heating', 'idle')."""
+    if not service_start or not isinstance(service_start.get("value"), dict):
+        return False
+    domain = entity_id.split(".")[0] if "." in entity_id else ""
+    if domain != "climate":
+        return False
+    slot_mode = service_start["value"].get("hvac_mode")
+    if slot_mode is None or (isinstance(slot_mode, str) and not slot_mode.strip()):
+        return False
+    if state_obj is None:
+        return True  # unknown state, apply slot
+    attrs = getattr(state_obj, "attributes", None) or {}
+    current = (attrs.get("hvac_mode") or getattr(state_obj, "state", None) or "")
+    current = str(current).strip().lower()
+    if current in ("unavailable", "unknown", ""):
+        return True
+    return str(slot_mode).strip().lower() != current
+
+
 class SchedulerCoordinator:
     """Coordinator for scheduler logic.
     
@@ -696,8 +719,40 @@ class SchedulerCoordinator:
                     except Exception as e:
                         _LOGGER.error("Failed to call service_start for %s: %s", entity_id, e)
                 else:
-                    # Already on, schedule active — overlap: turn_off = min(slot_end, entity_start + max_runtime)
-                    # Use max(slot_ends) — stay on until last slot ends (same as cold start)
+                    # Already on — for climate, if mode differs from slot, apply slot mode/temperature
+                    if _climate_slot_mode_differs_from_current(entity_id, switch_state, service_start):
+                        try:
+                            service_name = service_start["name"]
+                            if "." in service_name:
+                                service_domain, service_method = service_name.split(".", 1)
+                            else:
+                                service_domain = domain
+                                service_method = service_name
+                            service_value = dict(service_start["value"])
+                            if "entity_id" not in service_value:
+                                service_value["entity_id"] = entity_id
+                            entity_state["scheduler_controlled_on"] = True
+                            self._entity_states[entity_id] = entity_state
+                            await self.hass.services.async_call(
+                                service_domain,
+                                service_method,
+                                service_value,
+                                blocking=True,
+                            )
+                            now = dt_util.now()
+                            active_items_for_entity = self._get_active_items_for_entity(items, now)
+                            slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
+                            slot_ends = [t for t in slot_ends if t is not None]
+                            if slot_ends:
+                                latest_end = max(slot_ends)
+                                actual_end = self._effective_turn_off_time(entity_id, latest_end, entity_start=now)
+                                turn_off_time_ms = int(actual_end.timestamp() * 1000)
+                                self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
+                                self._notify_listeners()
+                        except Exception as e:
+                            _LOGGER.error("Failed to call service_start for %s (mode correction): %s", entity_id, e)
+                        return
+                    # Already on, same mode (or not climate): turn_off = min(slot_end, entity_start + max_runtime)
                     now = dt_util.now()
                     active_items_for_entity = self._get_active_items_for_entity(items, now)
                     slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
