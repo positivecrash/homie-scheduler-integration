@@ -3,10 +3,11 @@
   "name": "Homie Scheduler",
   "codeowners": ["@positivecrash"],
   "config_flow": true,
+  "single_config_entry": true,
   "dependencies": [],
   "documentation": "https://github.com/positivecrash/homie-scheduler-integration",
   "issue_tracker": "https://github.com/positivecrash/homie-scheduler-integration/issues",
-  "integration_type": "device",
+  "integration_type": "service",
   "iot_class": "local_polling",
   "requirements": [],
   "version": "1.0.8"

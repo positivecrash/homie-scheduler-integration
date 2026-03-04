@@ -7,14 +7,28 @@
       }
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Homie Schedule Settings",
-        "description": "Boiler auto turn off\n\nPrevents boiler from running too long",
-        "data": {
-          "boiler_entity": " ",
-          "boiler_time": "Time to turn off (0 = remove)"
+  "config_subentries": {
+    "entity_max_runtime": {
+      "entry_type": "Entity max run time",
+      "initiate_flow": {
+        "user": "Add entity max run time"
+      },
+      "step": {
+        "user": {
+          "title": "Add entity max run time",
+          "description": "Select an entity and set its max run time in minutes.",
+          "data": {
+            "entity_id": "Entity",
+            "max_minutes": "Max run time (min)"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit entity max run time",
+          "description": "Update the entity or its max run time.",
+          "data": {
+            "entity_id": "Entity",
+            "max_minutes": "Max run time (min)"
+          }
         }
       }
     }

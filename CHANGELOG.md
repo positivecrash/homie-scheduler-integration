@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.9]
+
+### Changed
+
+- **Cold start (HA restart):** On first run after restart, the scheduler enforces schedule state once per entity (turn on or turn off according to the current winning slot) so that relays/devices recover correctly if HA was down. Slots that have no duration (e.g. climate "run until next slot" or indefinite) are no longer turned on at startup; the integration waits for the next slot transition so we don't start an indefinite run at boot.
+- **Max run time settings:** You can now add multiple entities with per-entity limits. The list of supported entities is expanded (you can set max run time for climate and other supported domains as well).
+
+### Compatibility
+
+- Tested and compatible with Homie Scheduler Cards 1.1.0 (no API or service changes required).
+
 ## [1.0.8]
 
 ### Changed

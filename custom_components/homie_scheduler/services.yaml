@@ -189,3 +189,20 @@ enable_all_slots:
       required: true
       selector:
         text:
+
+set_entity_max_runtime:
+  name: Set entity max run time
+  description: Set the list of entities with max run time (minutes). Used by the Entity max run time card.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The entry ID of the scheduler
+      required: true
+      selector:
+        text:
+    entities:
+      name: Entities
+      description: List of { entity_id, max_minutes }
+      required: true
+      selector:
+        object:

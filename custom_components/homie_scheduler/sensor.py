@@ -13,7 +13,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import (
     ATTR_ENTRY_ID,
     ATTR_ITEMS,
-    CONF_ENTITY_MAX_RUNTIME,
     CONF_NAME,
     DOMAIN,
     ITEM_ENTITY_ID,
@@ -117,8 +116,8 @@ class SchedulerBridgeSensor(SensorEntity):
         # Get max_runtime turn-off times (from coordinator) so cards can show countdown when boiler runs under max_runtime
         max_runtime_turn_off_times = self._coordinator._max_runtime_turn_off_times
         
-        # Entity max runtime limits (entity_id -> minutes) so cards can show countdown fallback from last_changed
-        entity_max_runtime = self._entry.options.get(CONF_ENTITY_MAX_RUNTIME, {}) or {}
+        # Entity max runtime limits (entity_id -> minutes) — read via coordinator (subentries + options fallback)
+        entity_max_runtime = self._coordinator._get_entity_max_runtime()
         # Last run per entity: {entity_id: {started_at, ended_at, duration_minutes}} for status card
         entity_last_runs = getattr(self._coordinator, "_entity_last_run", {}) or {}
 

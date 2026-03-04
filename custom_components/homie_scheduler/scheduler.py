@@ -1,4 +1,14 @@
-"""Scheduler coordinator for Scheduler integration."""
+"""Scheduler coordinator for Scheduler integration.
+
+Climate slots algorithm (summary):
+- Items have service_start (e.g. climate.set_hvac_mode with hvac_mode: off/cool/heat) and optional service_end/duration.
+- For each entity we get active_items = slots in their time window, then winning_item = active slot with the latest
+  start time. When two slots overlap (e.g. Cool 08:20–09:22 and Off 08:25), the one that started later (Off) wins.
+- should_be_on = winning_item exists and (for climate: winning_item's mode is not "off"). We apply only the winning
+  slot's service_start/service_end and its end time.
+- We enforce: if should_be_on → call service_start from winning slot; if not should_be_on and device is on → turn off.
+- Per-entity timer fires at next transition (slot start or end); we re-enforce and reschedule the next timer.
+"""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -56,6 +66,17 @@ def _entity_state_is_on(entity_id: str, state_obj: Any) -> bool:
     if domain in _SUPPORTED_DOMAINS_OFF_MEANS_OFF:
         return state != "off"
     return state == STATE_ON.lower()
+
+
+def _item_duration_minutes(item: dict[str, Any]) -> int | None:
+    """Return slot duration in minutes, or None if not set (slot runs indefinitely unless max_run_time caps it)."""
+    d = item.get(ITEM_DURATION)
+    if d is None:
+        return None
+    try:
+        return int(d) if int(d) > 0 else 1
+    except (TypeError, ValueError):
+        return 1
 
 
 def _climate_slot_mode_differs_from_current(
@@ -134,6 +155,28 @@ class SchedulerCoordinator:
         """Return if scheduler is enabled."""
         return self.entry.options.get("enabled", True)
 
+    def _get_entity_max_runtime(self) -> dict[str, int]:
+        """Return {entity_id: max_minutes} from sub-entries (new) with fallback to options (backward compat)."""
+        from .config_flow import SUBENTRY_TYPE_ENTITY_MAX_RUNTIME
+        subentries = getattr(self.entry, "subentries", {}) or {}
+        if subentries:
+            result: dict[str, int] = {}
+            for subentry in subentries.values():
+                if subentry.subentry_type != SUBENTRY_TYPE_ENTITY_MAX_RUNTIME:
+                    continue
+                eid = str(subentry.data.get("entity_id") or "").strip()
+                try:
+                    mins = int(subentry.data.get("max_minutes", 0))
+                except (TypeError, ValueError):
+                    mins = 0
+                if eid and mins > 0:
+                    result[eid] = mins
+            if result:
+                return result
+        # Backward compat: read from options dict
+        raw = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {}) or {}
+        return {str(k): int(v) for k, v in raw.items() if v and int(v) > 0}
+
     @property
     def items(self) -> list[dict[str, Any]]:
         """Return schedule items."""
@@ -177,7 +220,7 @@ class SchedulerCoordinator:
             
             next_start = self._calculate_next_start(item, now)
             if next_start:
-                duration = int(item.get(ITEM_DURATION, 30))
+                duration = _item_duration_minutes(item)
                 candidates.append((next_start, duration, item_entity))
         
         if not candidates:
@@ -249,7 +292,7 @@ class SchedulerCoordinator:
             eid = item.get(ITEM_ENTITY_ID)
             if eid:
                 entity_ids.add(eid)
-        entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {}) or {}
+        entity_max_runtime = self._get_entity_max_runtime()
         for eid in entity_max_runtime:
             if eid and entity_max_runtime.get(eid, 0) > 0:
                 entity_ids.add(eid)
@@ -337,7 +380,7 @@ class SchedulerCoordinator:
                 entity_id = item.get(ITEM_ENTITY_ID)
                 if entity_id:
                     entity_ids.add(entity_id)
-            entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+            entity_max_runtime = self._get_entity_max_runtime()
             for entity_id in entity_max_runtime:
                 if entity_id and entity_max_runtime.get(entity_id, 0) > 0:
                     entity_ids.add(entity_id)
@@ -374,7 +417,7 @@ class SchedulerCoordinator:
             # Check entities with max_runtime - if already ON, start monitoring
             # _start_max_runtime_monitor skips if entity has active slot (slot controls turn-off)
             def _start_monitors_for_on_entities() -> None:
-                entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+                entity_max_runtime = self._get_entity_max_runtime()
                 for entity_id, max_minutes in entity_max_runtime.items():
                     if max_minutes > 0:
                         state = self.hass.states.get(entity_id)
@@ -474,14 +517,12 @@ class SchedulerCoordinator:
                     item for item in self.items
                     if item.get(ITEM_ENTITY_ID) == entity_id and item.get(ITEM_ENABLED, True)
                 ]
-                active_items = [item for item in items_for_entity if self._is_item_active(item, now)]
-                if active_items:
-                    end_times = [self._calculate_item_end(item, now) for item in active_items]
-                    end_times = [dt for dt in end_times if dt is not None]
-                    if end_times:
-                        blocked_until = max(end_times)
+                winning_item = self._get_winning_active_item(items_for_entity, now)
+                if winning_item:
+                    slot_end = self._calculate_item_end(winning_item, now)
+                    if slot_end:
                         entity_state = self._entity_states.get(entity_id, {"scheduler_controlled_on": False})
-                        entity_state["blocked_until"] = blocked_until
+                        entity_state["blocked_until"] = slot_end
                         self._entity_states[entity_id] = entity_state
             except Exception:
                 pass
@@ -522,7 +563,7 @@ class SchedulerCoordinator:
                 items_by_entity[entity_id].append(item)
             
             # Update state listeners: items + entity_max_runtime + active_buttons (last_run for recirculation-only entities)
-            entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+            entity_max_runtime = self._get_entity_max_runtime()
             max_runtime_entity_ids = {eid for eid, mins in entity_max_runtime.items() if eid and mins > 0}
             active_buttons_entity_ids = set(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}).keys())
             last_run_entity_ids = set(self._entity_last_run.keys())
@@ -557,13 +598,13 @@ class SchedulerCoordinator:
             
             # Process each entity independently: enforce state and set per-entity timer
             for entity_id, entity_items in items_by_entity.items():
-                # Calculate current state for this entity
+                winning_item = self._get_winning_active_item(entity_items, now)
+                should_be_on = self._winning_item_wants_on(entity_id, winning_item)
                 active_items = self._get_active_items_for_entity(entity_items, now)
-                should_be_on = len(active_items) > 0
-                
+
                 if not skip_enforce:
                     await self._async_enforce_switch_state(entity_id, should_be_on, entity_items)
-                
+
                 # Schedule this entity's next transition (per-entity timer)
                 next_transition = self._calculate_next_transition_for_entity(entity_items, now, active_items)
                 if next_transition:
@@ -591,8 +632,50 @@ class SchedulerCoordinator:
             _LOGGER.error("Error in _async_reschedule: %s", e, exc_info=True)
             # Don't re-raise - allow HA to continue
 
-    async def _async_enforce_switch_state(self, entity_id: str, should_be_on: bool, items: list[dict[str, Any]]) -> None:
-        """Enforce the switch state based on schedule for a specific entity using service_start/service_end."""
+    async def _async_apply_climate_service_start(
+        self, entity_id: str, service_start: dict[str, Any]
+    ) -> None:
+        """Apply climate slot: set_hvac_mode, then optionally set_temperature and set_fan_mode."""
+        value = dict(service_start.get("value") or {})
+        hvac_mode = value.get("hvac_mode")
+        if hvac_mode is not None:
+            await self.hass.services.async_call(
+                "climate", "set_hvac_mode",
+                {"entity_id": entity_id, "hvac_mode": hvac_mode},
+                blocking=True,
+            )
+        temperature = value.get("temperature")
+        if temperature is not None:
+            try:
+                await self.hass.services.async_call(
+                    "climate", "set_temperature",
+                    {"entity_id": entity_id, "temperature": float(temperature)},
+                    blocking=True,
+                )
+            except Exception as e:
+                _LOGGER.warning("Failed to set_temperature for %s: %s", entity_id, e)
+        fan_mode = value.get("fan_mode")
+        if fan_mode is not None and str(fan_mode).strip():
+            try:
+                await self.hass.services.async_call(
+                    "climate", "set_fan_mode",
+                    {"entity_id": entity_id, "fan_mode": str(fan_mode).strip()},
+                    blocking=True,
+                )
+            except Exception as e:
+                _LOGGER.warning("Failed to set_fan_mode for %s: %s", entity_id, e)
+
+    async def _async_enforce_switch_state(
+        self,
+        entity_id: str,
+        should_be_on: bool,
+        items: list[dict[str, Any]],
+        *,
+        at_slot_transition: bool = False,
+    ) -> None:
+        """Enforce the switch state based on schedule for a specific entity using service_start/service_end.
+        at_slot_transition: True when called from timer at slot start/end — allows turn-on even on first run (no cold-start skip).
+        """
         try:
             switch_state = self.hass.states.get(entity_id)
             if not switch_state:
@@ -624,7 +707,7 @@ class SchedulerCoordinator:
                             if not self._is_item_active(item, now):
                                 continue
                             time_str = item.get(ITEM_TIME)
-                            duration_min = int(item.get(ITEM_DURATION, 30))
+                            duration_min = _item_duration_minutes(item)
                             weekdays = item.get(ITEM_WEEKDAYS, [])
                             if not time_str or not weekdays:
                                 continue
@@ -639,7 +722,7 @@ class SchedulerCoordinator:
                             )
                             if now.weekday() not in weekdays:
                                 continue
-                            duration_min = int(item.get(ITEM_DURATION, 30))
+                            duration_min = _item_duration_minutes(item)
                             if (now - start_dt).total_seconds() < 60 and (now - start_dt).total_seconds() >= 0:
                                 at_new_slot_start = True
                                 break
@@ -658,26 +741,83 @@ class SchedulerCoordinator:
                     entity_state["blocked_until"] = None
                     self._entity_states[entity_id] = entity_state
             
-            # Get service_start and service_end from any item (all items for same entity should have same services)
-            service_start = None
-            service_end = None
-            if items:
-                for item in items:
+            # Use the winning (latest-start) active slot only — it overrides any overlapping earlier slot
+            now = dt_util.now()
+            winning_item = self._get_winning_active_item(items, now)
+            service_start = winning_item.get(ITEM_SERVICE_START) if winning_item else None
+            service_end = winning_item.get(ITEM_SERVICE_END) if winning_item else None
+            if not winning_item:
+                for item in items or []:
                     if ITEM_SERVICE_START in item:
                         service_start = item.get(ITEM_SERVICE_START)
                         service_end = item.get(ITEM_SERVICE_END)
                         break
-            
+
             if not service_start:
                 _LOGGER.warning("Missing service_start for %s, skipping", entity_id)
                 return
-            
+
+            # On cold start (HA restart), always send turn_on or turn_off based on schedule
+            # (no entity state check) to recover from crashes where the relay stayed on.
+            if self._cold_start:
+                # Slots without duration should NOT be turned on at startup — treat as off
+                if should_be_on and winning_item and _item_duration_minutes(winning_item) is None:
+                    should_be_on = False
+                if should_be_on:
+                    try:
+                        service_name = service_start["name"]
+                        if "." in service_name:
+                            service_domain, service_method = service_name.split(".", 1)
+                        else:
+                            service_domain = domain
+                            service_method = service_name
+                        service_value = dict(service_start["value"])
+                        if "entity_id" not in service_value:
+                            service_value["entity_id"] = entity_id
+                        entity_state["scheduler_controlled_on"] = True
+                        self._entity_states[entity_id] = entity_state
+                        if domain == "climate":
+                            await self._async_apply_climate_service_start(entity_id, service_start)
+                        else:
+                            await self.hass.services.async_call(
+                                service_domain, service_method, service_value, blocking=True
+                            )
+                        now = dt_util.now()
+                        winning_item_now = self._get_winning_active_item(items, now)
+                        if winning_item_now:
+                            slot_end = self._calculate_item_end(winning_item_now, now)
+                            if slot_end:
+                                actual_end = self._effective_turn_off_time(entity_id, slot_end, entity_start=now)
+                                turn_off_time_ms = int(actual_end.timestamp() * 1000)
+                                self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
+                        self._notify_listeners()
+                    except Exception as e:
+                        _LOGGER.error("Failed to call service_start for %s (enforce on startup): %s", entity_id, e)
+                else:
+                    service_end_to_use = service_end or {"name": f"{domain}.turn_off", "value": {"entity_id": entity_id}}
+                    try:
+                        sn = service_end_to_use["name"]
+                        sd, sm = (sn.split(".", 1) if "." in sn else (domain, sn))
+                        sv = dict(service_end_to_use["value"])
+                        if "entity_id" not in sv:
+                            sv["entity_id"] = entity_id
+                        await self.hass.services.async_call(sd, sm, sv, blocking=True)
+                        entity_state["scheduler_controlled_on"] = False
+                        self._entity_states[entity_id] = entity_state
+                        if entity_id in self._max_runtime_turn_off_times:
+                            del self._max_runtime_turn_off_times[entity_id]
+                        self._notify_listeners()
+                    except Exception as e:
+                        _LOGGER.error("Failed to call service_end for %s (enforce on startup): %s", entity_id, e)
+                return
+
             if should_be_on:
                 if not is_on:
-                    # On cold start (after HA restart), do not turn on - wait for next transition
-                    if self._cold_start:
+                    # On cold start (after HA restart), do not turn on - wait for next transition.
+                    # Exception: when at_slot_transition (timer fired at slot start), always turn on so Cool slot turns on AC.
+                    if self._cold_start and not at_slot_transition:
                         return
-                    # Need to turn on — entity was OFF before slot (cold start)
+                    # Need to turn on — entity was OFF; apply slot (e.g. climate.set_hvac_mode Cool)
                     # Logic: turn off at slot_end; cap by max_runtime if slot_duration > max_runtime
                     try:
                         # Parse service name (format: "domain.service_name")
@@ -697,25 +837,32 @@ class SchedulerCoordinator:
                         # Mark that scheduler is turning on (set before call so state_changed sees it immediately)
                         entity_state["scheduler_controlled_on"] = True
                         self._entity_states[entity_id] = entity_state
-                        await self.hass.services.async_call(
-                            service_domain,
-                            service_method,
-                            service_value,
-                            blocking=True,
-                        )
+                        if domain == "climate":
+                            await self._async_apply_climate_service_start(entity_id, service_start)
+                        else:
+                            await self.hass.services.async_call(
+                                service_domain,
+                                service_method,
+                                service_value,
+                                blocking=True,
+                            )
                         # Store slot end time in _max_runtime_turn_off_times; cap by max_runtime (single place)
                         now = dt_util.now()
-                        active_items_for_entity = self._get_active_items_for_entity(items, now)
-                        if active_items_for_entity:
-                            slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
-                            slot_ends = [t for t in slot_ends if t is not None]
-                            if slot_ends:
-                                latest_end = max(slot_ends)
-                                actual_end = self._effective_turn_off_time(entity_id, latest_end, entity_start=now)
+                        winning_item_now = self._get_winning_active_item(items, now)
+                        if winning_item_now:
+                            slot_end = self._calculate_item_end(winning_item_now, now)
+                            if slot_end:
+                                actual_end = self._effective_turn_off_time(entity_id, slot_end, entity_start=now)
                                 turn_off_time_ms = int(actual_end.timestamp() * 1000)
                                 self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-                                # Notify listeners so bridge sensor updates
                                 self._notify_listeners()
+                            else:
+                                entity_max_runtime = self._get_entity_max_runtime()
+                                max_minutes = entity_max_runtime.get(entity_id, 0)
+                                if max_minutes > 0:
+                                    actual_end = now + timedelta(minutes=max_minutes)
+                                    self._max_runtime_turn_off_times[entity_id] = int(actual_end.timestamp() * 1000)
+                                    self._notify_listeners()
                     except Exception as e:
                         _LOGGER.error("Failed to call service_start for %s: %s", entity_id, e)
                 else:
@@ -733,36 +880,73 @@ class SchedulerCoordinator:
                                 service_value["entity_id"] = entity_id
                             entity_state["scheduler_controlled_on"] = True
                             self._entity_states[entity_id] = entity_state
-                            await self.hass.services.async_call(
-                                service_domain,
-                                service_method,
-                                service_value,
-                                blocking=True,
-                            )
+                            if domain == "climate":
+                                await self._async_apply_climate_service_start(entity_id, service_start)
+                            else:
+                                await self.hass.services.async_call(
+                                    service_domain,
+                                    service_method,
+                                    service_value,
+                                    blocking=True,
+                                )
                             now = dt_util.now()
-                            active_items_for_entity = self._get_active_items_for_entity(items, now)
-                            slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
-                            slot_ends = [t for t in slot_ends if t is not None]
-                            if slot_ends:
-                                latest_end = max(slot_ends)
-                                actual_end = self._effective_turn_off_time(entity_id, latest_end, entity_start=now)
-                                turn_off_time_ms = int(actual_end.timestamp() * 1000)
-                                self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-                                self._notify_listeners()
+                            winning_item_now = self._get_winning_active_item(items, now)
+                            if winning_item_now:
+                                slot_end = self._calculate_item_end(winning_item_now, now)
+                                if slot_end:
+                                    actual_end = self._effective_turn_off_time(entity_id, slot_end, entity_start=now)
+                                    turn_off_time_ms = int(actual_end.timestamp() * 1000)
+                                    self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
+                                    self._notify_listeners()
+                                else:
+                                    entity_max_runtime = self._get_entity_max_runtime()
+                                    max_minutes = entity_max_runtime.get(entity_id, 0)
+                                    if max_minutes > 0:
+                                        actual_end = now + timedelta(minutes=max_minutes)
+                                        self._max_runtime_turn_off_times[entity_id] = int(actual_end.timestamp() * 1000)
+                                        self._notify_listeners()
                         except Exception as e:
                             _LOGGER.error("Failed to call service_start for %s (mode correction): %s", entity_id, e)
                         return
                     # Already on, same mode (or not climate): turn_off = min(slot_end, entity_start + max_runtime)
                     now = dt_util.now()
-                    active_items_for_entity = self._get_active_items_for_entity(items, now)
-                    slot_ends = [self._calculate_item_end(item, now) for item in active_items_for_entity]
+                    winning_item_now = self._get_winning_active_item(items, now)
+                    slot_ends = [self._calculate_item_end(winning_item_now, now)] if winning_item_now else []
                     slot_ends = [t for t in slot_ends if t is not None]
-                    slot_end = max(slot_ends) if slot_ends else None
-                    actual_end = self._effective_turn_off_time(entity_id, slot_end) if slot_end else None
-                    if actual_end is not None and actual_end <= now:
-                        actual_end = None
+                    stay_on_indefinitely = False
 
-                    if actual_end is None:
+                    if slot_ends:
+                        slot_end = max(slot_ends)
+                        actual_end = self._effective_turn_off_time(entity_id, slot_end)
+                        if actual_end is not None and actual_end <= now:
+                            actual_end = None  # Expired — will turn off
+                    else:
+                        # No-duration slots — check max_run_time only
+                        entity_max_runtime = self._get_entity_max_runtime()
+                        max_minutes = entity_max_runtime.get(entity_id, 0)
+                        if max_minutes > 0:
+                            switch_state_obj = self.hass.states.get(entity_id)
+                            if switch_state_obj and getattr(switch_state_obj, "last_changed", None):
+                                entity_start = dt_util.as_utc(switch_state_obj.last_changed)
+                            else:
+                                entity_start = now
+                            actual_end = entity_start + timedelta(minutes=max_minutes)
+                            if actual_end <= now:
+                                actual_end = None  # max_runtime exceeded — will turn off
+                        else:
+                            # No duration, no max_runtime — device stays on indefinitely
+                            actual_end = None
+                            stay_on_indefinitely = True
+
+                    if stay_on_indefinitely:
+                        # Mark as scheduler-controlled, clear any stale turn-off time
+                        if not scheduler_controlled:
+                            entity_state["scheduler_controlled_on"] = True
+                            self._entity_states[entity_id] = entity_state
+                        if entity_id in self._max_runtime_turn_off_times:
+                            del self._max_runtime_turn_off_times[entity_id]
+                            self._notify_listeners()
+                    elif actual_end is None:
                         # elapsed >= max_runtime or remaining <= 0 — turn off now
                         if not scheduler_controlled:
                             entity_state["scheduler_controlled_on"] = True
@@ -789,30 +973,37 @@ class SchedulerCoordinator:
                             entity_state["scheduler_controlled_on"] = True
                             self._entity_states[entity_id] = entity_state
                         turn_off_time_ms = int(actual_end.timestamp() * 1000)
-                        self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
-                        # Status card prioritizes active_buttons.timer_end — update it so "will be off" shows extended time
+                        # Only overwrite max_runtime_turn_off_times if enforcement is SHORTER than button timer.
+                        # Don't extend the button's own timer to max_runtime — that would break "will be off" display.
+                        existing_turn_off = self._max_runtime_turn_off_times.get(entity_id, 0)
+                        if not existing_turn_off or turn_off_time_ms < existing_turn_off:
+                            self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
+                        # Update active_buttons.timer_end only if enforcement SHORTENS the existing timer.
                         active_buttons = dict(self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}))
                         if entity_id in active_buttons:
-                            remaining_min = int((actual_end - now).total_seconds() // 60)
-                            active_buttons[entity_id] = {
-                                **active_buttons[entity_id],
-                                "timer_end": turn_off_time_ms,
-                                "duration": remaining_min,
-                            }
-                            new_options = {**self.entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
-                            self.hass.config_entries.async_update_entry(self.entry, options=new_options)
+                            existing_btn_timer = active_buttons[entity_id].get("timer_end", 0)
+                            if not existing_btn_timer or turn_off_time_ms < int(existing_btn_timer):
+                                remaining_min = int((actual_end - now).total_seconds() // 60)
+                                active_buttons[entity_id] = {
+                                    **active_buttons[entity_id],
+                                    "timer_end": turn_off_time_ms,
+                                    "duration": remaining_min,
+                                }
+                                new_options = {**self.entry.options, STORAGE_ACTIVE_BUTTONS: active_buttons}
+                                self.hass.config_entries.async_update_entry(self.entry, options=new_options)
                         self._notify_listeners()
                 
             elif not should_be_on and is_on:
-                # Need to turn off - check if we control it (or recover: just past slot end)
+                # Need to turn off when: scheduler_controlled, or just past slot end (recovery), or winning slot wants off
                 now = dt_util.now()
-                # Recovery: after HA restart/reload all timers are lost. If the slot already ended while we were down,
-                # we're "just past slot end". Within RECOVERY_AFTER_SLOT_END (e.g. 10 min) we still turn off the entity.
-                # If the server was off longer than 10 min after the slot end, we don't turn off (entity stays on).
+                schedule_wants_off_explicitly = (
+                    winning_item is not None
+                    and not self._winning_item_wants_on(entity_id, winning_item)
+                )
                 just_past_slot_end = not scheduler_controlled and self._is_just_after_slot_end(
                     items, now, RECOVERY_AFTER_SLOT_END_SECONDS
                 )
-                if scheduler_controlled or just_past_slot_end:
+                if scheduler_controlled or just_past_slot_end or schedule_wants_off_explicitly:
                     if not service_end:
                         service_end = {"name": f"{domain}.turn_off", "value": {"entity_id": entity_id}}
                     if service_end:
@@ -873,9 +1064,11 @@ class SchedulerCoordinator:
         items_for_entity = [i for i in self.items if i.get(ITEM_ENTITY_ID) == entity_id]
         if not items_for_entity:
             return
-        active_items = self._get_active_items_for_entity(items_for_entity, now)
-        should_be_on = len(active_items) > 0
-        await self._async_enforce_switch_state(entity_id, should_be_on, items_for_entity)
+        winning_item = self._get_winning_active_item(items_for_entity, now)
+        should_be_on = self._winning_item_wants_on(entity_id, winning_item)
+        await self._async_enforce_switch_state(
+            entity_id, should_be_on, items_for_entity, at_slot_transition=True
+        )
         await self._async_reschedule_entity(entity_id, skip_enforce=True)
 
     async def _async_reschedule_entity(self, entity_id: str, skip_enforce: bool = False) -> None:
@@ -892,8 +1085,9 @@ class SchedulerCoordinator:
                 self._notify_listeners()
                 return
             now = dt_util.now()
+            winning_item = self._get_winning_active_item(items_for_entity, now)
+            should_be_on = self._winning_item_wants_on(entity_id, winning_item)
             active_items = self._get_active_items_for_entity(items_for_entity, now)
-            should_be_on = len(active_items) > 0
             if not skip_enforce:
                 await self._async_enforce_switch_state(entity_id, should_be_on, items_for_entity)
             next_transition = self._calculate_next_transition_for_entity(items_for_entity, now, active_items)
@@ -944,42 +1138,109 @@ class SchedulerCoordinator:
         
         return active
 
+    def _get_item_start_dt(self, item: dict[str, Any], now: datetime) -> datetime | None:
+        """Return the start datetime of the current occurrence if the item is active at now; else None."""
+        time_str = item.get(ITEM_TIME)
+        duration = _item_duration_minutes(item)
+        weekdays = item.get(ITEM_WEEKDAYS, [])
+
+        if not time_str or not weekdays:
+            return None
+        match = TIME_PATTERN.match(time_str)
+        if not match:
+            return None
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+
+        if now.weekday() in weekdays:
+            start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if duration is None:
+                end_dt = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            else:
+                end_dt = start_dt + timedelta(minutes=duration)
+            if start_dt <= now < end_dt:
+                return start_dt
+
+        yesterday = now.date() - timedelta(days=1)
+        if yesterday.weekday() in weekdays and duration is not None:
+            start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=1)
+            end_dt = start_dt + timedelta(minutes=duration)
+            if start_dt <= now < end_dt:
+                return start_dt
+        return None
+
+    def _get_winning_active_item(
+        self, items: list[dict[str, Any]], now: datetime
+    ) -> dict[str, Any] | None:
+        """Among items active at now, return the one with the latest start time (that slot overrides others)."""
+        active = [item for item in items if self._is_item_active(item, now)]
+        if not active:
+            return None
+        best_item = None
+        best_start: datetime | None = None
+        for item in active:
+            start_dt = self._get_item_start_dt(item, now)
+            if start_dt is not None and (best_start is None or start_dt > best_start):
+                best_start = start_dt
+                best_item = item
+        return best_item
+
+    def _winning_item_wants_on(self, entity_id: str, winning_item: dict[str, Any] | None) -> bool:
+        """True if the winning (highest-priority) slot means the device should be on.
+        For climate: off when slot has hvac_mode 'off', else on when it has a mode."""
+        if not winning_item:
+            return False
+        domain = entity_id.split(".")[0] if "." in entity_id else ""
+        if domain != "climate":
+            return True
+        ss = winning_item.get(ITEM_SERVICE_START)
+        if not ss or not isinstance(ss.get("value"), dict):
+            return False
+        mode = ss["value"].get("hvac_mode")
+        if mode is None:
+            return False
+        return str(mode).strip().lower() != "off"
+
     def _is_item_active(self, item: dict[str, Any], now: datetime) -> bool:
         """Check if a schedule item is currently active."""
         time_str = item.get(ITEM_TIME)
-        duration = int(item.get(ITEM_DURATION, 30))
+        duration = _item_duration_minutes(item)
         weekdays = item.get(ITEM_WEEKDAYS, [])
-        
+
         if not time_str or not weekdays:
             return False
-        
+
         # Parse time
         match = TIME_PATTERN.match(time_str)
         if not match:
             return False
-        
+
         hour = int(match.group(1))
         minute = int(match.group(2))
-        
+
         # Check today
         if now.weekday() in weekdays:
             start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            end_dt = start_dt + timedelta(minutes=duration)
-            
+            if duration is None:
+                # No duration: active from start until end of day
+                end_dt = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+            else:
+                end_dt = start_dt + timedelta(minutes=duration)
+
             if start_dt <= now < end_dt:
                 return True
-        
+
         # Check if started yesterday and extends to today (cross-midnight)
         yesterday = now.date() - timedelta(days=1)
         yesterday_weekday = yesterday.weekday()
-        
-        if yesterday_weekday in weekdays:
+
+        if yesterday_weekday in weekdays and duration is not None:
             start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=1)
             end_dt = start_dt + timedelta(minutes=duration)
-            
+
             if start_dt <= now < end_dt:
                 return True
-        
+
         return False
 
     def _calculate_next_transition(
@@ -1016,7 +1277,7 @@ class SchedulerCoordinator:
         Regardless of how the entity was turned on (slot, button, external), run never exceeds max_runtime.
         entity_start: when the run started; if None, read from current switch state (only works if entity is on).
         """
-        entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+        entity_max_runtime = self._get_entity_max_runtime()
         max_minutes = entity_max_runtime.get(entity_id, 0)
         if max_minutes <= 0:
             return proposed_end
@@ -1044,15 +1305,26 @@ class SchedulerCoordinator:
         switch_state = self.hass.states.get(entity_id) if entity_id else None
         is_on = entity_id and switch_state and _entity_state_is_on(entity_id, switch_state)
         run_start = dt_util.as_utc(switch_state.last_changed) if (is_on and switch_state and getattr(switch_state, "last_changed", None)) else now
+        has_duration_end = False
         for item in active_items:
             next_end = self._calculate_item_end(item, now)
             if next_end and entity_id:
                 capped = self._effective_turn_off_time(entity_id, next_end, entity_start=run_start)
                 candidates.append(capped)
-        
+                has_duration_end = True
+
+        # For active no-duration items with max_runtime, add max_runtime as transition
+        if entity_id and active_items and not has_duration_end and is_on:
+            entity_max_runtime = self._get_entity_max_runtime()
+            max_minutes = entity_max_runtime.get(entity_id, 0)
+            if max_minutes > 0:
+                max_runtime_turn_off = run_start + timedelta(minutes=max_minutes)
+                if max_runtime_turn_off > now:
+                    candidates.append(max_runtime_turn_off)
+
         # Add max_runtime turn-off only when entity is on but NO active slot (manual/button turn-on)
         if entity_id and not active_items:
-            entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+            entity_max_runtime = self._get_entity_max_runtime()
             max_minutes = entity_max_runtime.get(entity_id, 0)
             if max_minutes > 0:
                 switch_state = self.hass.states.get(entity_id)
@@ -1112,38 +1384,41 @@ class SchedulerCoordinator:
     def _calculate_item_end(
         self, item: dict[str, Any], now: datetime
     ) -> datetime | None:
-        """Calculate end time for currently active item."""
+        """Calculate end time for currently active item. Returns None if no duration (runs indefinitely)."""
         time_str = item.get(ITEM_TIME)
-        duration = int(item.get(ITEM_DURATION, 30))
+        duration = _item_duration_minutes(item)
         weekdays = item.get(ITEM_WEEKDAYS, [])
-        
+
         if not time_str or not weekdays:
             return None
-        
+
+        if duration is None:
+            return None  # No duration → no scheduled end
+
         # Parse time
         match = TIME_PATTERN.match(time_str)
         if not match:
             return None
-        
+
         hour = int(match.group(1))
         minute = int(match.group(2))
-        
+
         # Check today
         if now.weekday() in weekdays:
             start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             end_dt = start_dt + timedelta(minutes=duration)
-            
+
             if start_dt <= now < end_dt:
                 return end_dt
-        
+
         # Check yesterday (cross-midnight)
         yesterday = now.date() - timedelta(days=1)
         yesterday_weekday = yesterday.weekday()
-        
+
         if yesterday_weekday in weekdays:
             start_dt = now.replace(hour=hour, minute=minute, second=0, microsecond=0) - timedelta(days=1)
             end_dt = start_dt + timedelta(minutes=duration)
-            
+
             if start_dt <= now < end_dt:
                 return end_dt
         
@@ -1159,10 +1434,10 @@ class SchedulerCoordinator:
             if not item.get(ITEM_ENABLED, True):
                 continue
             time_str = item.get(ITEM_TIME)
-            duration = int(item.get(ITEM_DURATION, 30))
+            duration = _item_duration_minutes(item)
             weekdays = item.get(ITEM_WEEKDAYS, [])
-            if not time_str or not weekdays:
-                continue
+            if not time_str or not weekdays or duration is None:
+                continue  # No-duration slots never "end", so skip them
             match = TIME_PATTERN.match(time_str)
             if not match:
                 continue
@@ -1232,8 +1507,8 @@ class SchedulerCoordinator:
 
         Skips if entity has active slot — slot controls turn-off, don't overwrite.
         """
-        # Get max_runtime from options
-        entity_max_runtime = self.entry.options.get(CONF_ENTITY_MAX_RUNTIME, {})
+        # Get max_runtime from sub-entries or options
+        entity_max_runtime = self._get_entity_max_runtime()
         max_minutes = entity_max_runtime.get(entity_id)
         if not max_minutes or max_minutes <= 0:
             return  # No max runtime configured
@@ -1381,3 +1656,6 @@ class SchedulerCoordinator:
                 continue
             if te_ms > now_ms:
                 self._schedule_button_turn_off(eid, te_ms)
+                # Sync bridge display: override max_runtime_turn_off_times so "will be off"
+                # shows the button's duration, not the entity-level max_runtime.
+                self._max_runtime_turn_off_times[eid] = te_ms

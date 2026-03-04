@@ -43,6 +43,7 @@ from .const import (
     SERVICE_CLEAR_ACTIVE_BUTTON,
     SERVICE_REGISTER_ENTITY_FOR_LAST_RUN,
     SERVICE_ENABLE_ALL_SLOTS,
+    SERVICE_SET_ENTITY_MAX_RUNTIME,
     STORAGE_ACTIVE_BUTTONS,
     WEEKDAYS,
 )
@@ -114,7 +115,7 @@ SERVICE_UPDATE_ITEM_SCHEMA = vol.Schema(
         vol.Optional(ITEM_ENTITY_ID): cv.entity_id,
         vol.Optional(ITEM_ENABLED): cv.boolean,
         vol.Optional(ITEM_TIME): cv.string,
-        vol.Optional(ITEM_DURATION): cv.positive_int,  # Any positive integer, no hard limits
+        vol.Optional(ITEM_DURATION): vol.Any(cv.positive_int, None),
         vol.Optional(ITEM_WEEKDAYS): vol.All(
             cv.ensure_list,
             [vol.In(WEEKDAYS)],
@@ -124,10 +125,13 @@ SERVICE_UPDATE_ITEM_SCHEMA = vol.Schema(
             vol.Required("name"): cv.string,
             vol.Required("value"): dict,
         }),
-        vol.Optional(ITEM_SERVICE_END): vol.Schema({
-            vol.Required("name"): cv.string,
-            vol.Required("value"): dict,
-        }),
+        vol.Optional(ITEM_SERVICE_END): vol.Any(
+            vol.Schema({
+                vol.Required("name"): cv.string,
+                vol.Required("value"): dict,
+            }),
+            None,
+        ),
         vol.Optional("title"): vol.Any(cv.string, None),  # Optional; None/empty = no custom name
     }
 )
@@ -201,11 +205,11 @@ def validate_item(item: dict[str, Any]) -> bool:
     if ITEM_TIME in item and not validate_time(item[ITEM_TIME]):
         raise vol.Invalid(f"Invalid time format: {item[ITEM_TIME]}")
     
-    # Validate duration (must be positive integer, no hard limits)
+    # Validate duration: optional; when present must be None (climate "off" slot) or positive integer
     if ITEM_DURATION in item:
         duration = item[ITEM_DURATION]
-        if not isinstance(duration, int) or duration <= 0:
-            raise vol.Invalid(f"Invalid duration: {duration} (must be a positive integer)")
+        if duration is not None and (not isinstance(duration, int) or duration <= 0):
+            raise vol.Invalid(f"Invalid duration: {duration} (must be None or a positive integer)")
     
     # Validate weekdays
     if ITEM_WEEKDAYS in item:
@@ -447,13 +451,19 @@ async def async_setup_services(hass: HomeAssistant) -> None:
             if ITEM_TIME in call.data:
                 updated_item[ITEM_TIME] = call.data[ITEM_TIME]
             if ITEM_DURATION in call.data:
-                updated_item[ITEM_DURATION] = call.data[ITEM_DURATION]
+                if call.data[ITEM_DURATION] is None:
+                    updated_item.pop(ITEM_DURATION, None)
+                else:
+                    updated_item[ITEM_DURATION] = call.data[ITEM_DURATION]
             if ITEM_WEEKDAYS in call.data:
                 updated_item[ITEM_WEEKDAYS] = call.data[ITEM_WEEKDAYS]
             if ITEM_SERVICE_START in call.data:
                 updated_item[ITEM_SERVICE_START] = call.data[ITEM_SERVICE_START]
             if ITEM_SERVICE_END in call.data:
-                updated_item[ITEM_SERVICE_END] = call.data[ITEM_SERVICE_END]
+                if call.data[ITEM_SERVICE_END] is None:
+                    updated_item.pop(ITEM_SERVICE_END, None)
+                else:
+                    updated_item[ITEM_SERVICE_END] = call.data[ITEM_SERVICE_END]
             if "title" in call.data:
                 title = call.data["title"]
                 if title is not None and str(title).strip():
@@ -744,6 +754,24 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         except Exception as e:
             _LOGGER.error("Error in handle_clear_active_button: %s", e, exc_info=True)
 
+    async def handle_set_entity_max_runtime(call: ServiceCall) -> None:
+        """Update entity_max_runtime from list of {entity_id, max_minutes}. Used by the entity max run time card dialog."""
+        try:
+            entry_id = call.data[ATTR_ENTRY_ID]
+            entities = call.data.get("entities", [])
+            coordinator = hass.data.get(DOMAIN, {}).get(entry_id)
+            if not coordinator:
+                _LOGGER.error("Entry %s not found for set_entity_max_runtime", entry_id)
+                return
+            entry = coordinator.entry
+            entity_max_runtime = {item[ATTR_ENTITY_ID]: item["max_minutes"] for item in entities if item.get(ATTR_ENTITY_ID) and item.get("max_minutes", 0) > 0}
+            new_options = {**entry.options, CONF_ENTITY_MAX_RUNTIME: entity_max_runtime}
+            hass.config_entries.async_update_entry(entry, options=new_options)
+            await coordinator.async_reload()
+            coordinator.notify_listeners_immediate()
+        except Exception as e:
+            _LOGGER.error("Error in handle_set_entity_max_runtime: %s", e, exc_info=True)
+
     async def handle_register_entity_for_last_run(call: ServiceCall) -> None:
         """Register entity for Latest activity tracking (add to entity_last_run so we listen and persist)."""
         try:
@@ -787,6 +815,23 @@ async def async_setup_services(hass: HomeAssistant) -> None:
         {
             vol.Required(ATTR_ENTRY_ID): cv.string,
             vol.Required(ATTR_ENTITY_ID): cv.string,
+        }
+    )
+
+    SERVICE_SET_ENTITY_MAX_RUNTIME_SCHEMA = vol.Schema(
+        {
+            vol.Required(ATTR_ENTRY_ID): cv.string,
+            vol.Required("entities"): vol.All(
+                cv.ensure_list,
+                [
+                    vol.Schema(
+                        {
+                            vol.Required(ATTR_ENTITY_ID): cv.string,
+                            vol.Required("max_minutes"): vol.All(cv.positive_int, vol.Range(min=1, max=1440)),
+                        }
+                    )
+                ],
+            ),
         }
     )
 
@@ -891,6 +936,16 @@ async def async_setup_services(hass: HomeAssistant) -> None:
     except Exception as e:
         _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN, e)
 
+    try:
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_ENTITY_MAX_RUNTIME,
+            handle_set_entity_max_runtime,
+            schema=SERVICE_SET_ENTITY_MAX_RUNTIME_SCHEMA,
+        )
+    except Exception as e:
+        _LOGGER.error("Failed to register service %s.%s: %s", DOMAIN, SERVICE_SET_ENTITY_MAX_RUNTIME, e)
+
 
 async def async_unload_services(hass: HomeAssistant) -> None:
     """Unload services."""
@@ -906,5 +961,6 @@ async def async_unload_services(hass: HomeAssistant) -> None:
         hass.services.async_remove(DOMAIN, SERVICE_SET_ACTIVE_BUTTON)
         hass.services.async_remove(DOMAIN, SERVICE_CLEAR_ACTIVE_BUTTON)
         hass.services.async_remove(DOMAIN, SERVICE_REGISTER_ENTITY_FOR_LAST_RUN)
+        hass.services.async_remove(DOMAIN, SERVICE_SET_ENTITY_MAX_RUNTIME)
     except Exception as e:
         _LOGGER.error("Error unloading services: %s", e)

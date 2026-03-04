@@ -6,12 +6,12 @@ Home Assistant custom integration for schedule management. **For the Lovelace UI
 
 ## Features
 
-- Schedule management for switch, input_boolean, light, fan, cover, and climate entities
+- Schedule management for switch, input_boolean, light, fan, cover, climate, and water_heater entities
 - Multiple entities in one instance; time, duration (optional), weekdays
 - Custom service_start/service_end per item; conflict protection; overlapping schedules
-- Optional boiler max runtime (auto turn-off)
+- **Per-entity max run time** (optional): set in the integration options for multiple entities. When set, the integration turns the entity off after that many minutes whenever the device is on and Home Assistant is running—regardless of how it was turned on (schedule, button, or manually). Supported domains include switch, climate, water_heater, and others the scheduler controls.
 
-The integration schedules turn-on/turn-off by setting deferred callbacks in code via `async_call_later()`. It does not use automations or timer entities. After an HA restart, it rebuilds the schedule from its config and reschedules those callbacks.
+The integration schedules turn-on/turn-off by setting deferred callbacks in code via `async_call_later()`. It does not use automations or timer entities. After an HA restart, it rebuilds the schedule from config, enforces the current schedule state once per entity (so devices recover if HA was down), then reschedules timers.
 
 ## Manual installation
 
@@ -41,11 +41,13 @@ The integration schedules turn-on/turn-off by setting deferred callbacks in code
 | **add_item** | Add a new schedule slot. | `entry_id`, `entity_id`, `time`, `weekdays`, `duration`, `service_start`, `service_end`, `enabled` |
 | **update_item** | Update an existing slot. | `entry_id`, `item_id`, plus optional `entity_id`, `time`, `weekdays`, `duration`, `enabled`, `service_start`, `service_end` |
 | **delete_item** | Remove a schedule slot. | `entry_id`, `item_id` |
-| **set_enabled** | Enable or disable the scheduler. | `entry_id`, `enabled` |
-| **toggle_enabled** | Toggle scheduler on/off. | `entry_id` |
+| **set_enabled** | Enable or disable the scheduler (master switch: when off, no slots run). Example: turn off the schedule while on vacation without deleting slots. | `entry_id`, `enabled` |
+| **toggle_enabled** | Toggle scheduler on/off. Example: single button or scene to start or pause the schedule. | `entry_id` |
 | **set_active_button** | Mark a "RUN FOR" button as active (used by button card). | `entry_id`, `entity_id`, `button_id`, `timer_end`, `duration` |
 | **clear_active_button** | Clear active button when entity turns off. | `entry_id`, `entity_id` |
 | **register_entity_for_last_run** | Register an entity for “latest activity” tracking (used by status card). | `entry_id`, `entity_id` |
+| **enable_all_slots** | Set every schedule slot to enabled in one call (slots keep their time/weekdays; only the enabled flag is set to true). Example: scene that turns the scheduler on and re-enables all slots after you had disabled some. | `entry_id` |
+| **set_entity_max_runtime** | Set per-entity max run time in minutes (entity is turned off after that time whenever it is on, regardless of how it was turned on). Example: automation or options UI to cap run time for a boiler or climate entity. | `entry_id`, `entities` (list of `{ entity_id, max_minutes }`) |
 
 All services are in domain `homie_scheduler`. Cards use these services internally; manual calls are rarely needed.
 
@@ -61,7 +63,9 @@ The integration **does not create** automations or timer entities in Home Assist
 
 ### Options and config updates
 
-The integration does **not** register an `OptionsUpdateListener` (`entry.add_update_listener`). When you save options in the integration config screen (Options Flow), the flow calls `async_schedule_reload()`, so the integration reloads and the new options take effect automatically. When a **service** updates options (e.g. `set_items`, `set_active_button`, `update_item`), it calls `coordinator.async_reload()` so the coordinator picks up the new values.
+In the integration **config screen** (Options) you can set **entity max run time**: add multiple entities and a max run time in minutes for each. The integration does **not** register an `OptionsUpdateListener` (`entry.add_update_listener`). When you save options, the flow calls `async_schedule_reload()`, so the integration reloads and the new options take effect. When a **service** updates options (e.g. `set_items`, `set_active_button`, `update_item`), it calls `coordinator.async_reload()` so the coordinator picks up the new values.
+
+**Supported domains** (schedule control and max run time): `switch`, `input_boolean`, `light`, `fan`, `cover`, `climate`, `water_heater`.
 
 ## License
 

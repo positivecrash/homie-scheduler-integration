@@ -7,10 +7,9 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.config_entries import ConfigSubentryFlow, SubentryFlowResult
 from homeassistant.core import callback
-from homeassistant.helpers import selector
 from homeassistant.helpers.selector import (
-    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -19,13 +18,15 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
-    CONF_ENTITY_MAX_RUNTIME,
     CONF_NAME,
     DEFAULT_NAME,
     DOMAIN,
+    ENTITY_MAX_RUNTIME_DOMAINS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+SUBENTRY_TYPE_ENTITY_MAX_RUNTIME = "entity_max_runtime"
 
 
 class SchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -35,107 +36,106 @@ class SchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
-        """Handle the initial step - create entry immediately without asking for parameters."""
-        # Create entry immediately with default values
-        # Use a unique ID based on domain
+    ) -> config_entries.ConfigFlowResult:
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
-        
         return self.async_create_entry(
             title=DEFAULT_NAME,
-            data={
-                CONF_NAME: DEFAULT_NAME,
-            },
+            data={CONF_NAME: DEFAULT_NAME},
             options={
-                CONF_ENTITY_MAX_RUNTIME: {},  # Dict: {entity_id: max_minutes}
                 "items": [],
                 "enabled": True,
             },
         )
 
-    @staticmethod
+    @classmethod
     @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> SchedulerOptionsFlow:
-        """Get the options flow for this handler."""
-        return SchedulerOptionsFlow()
+    def async_get_supported_subentry_types(
+        cls, config_entry: config_entries.ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return subentry types supported by this integration."""
+        return {SUBENTRY_TYPE_ENTITY_MAX_RUNTIME: EntityMaxRuntimeSubentryFlow}
 
 
-class SchedulerOptionsFlow(config_entries.OptionsFlow):
-    """Handle options flow for Scheduler."""
+class EntityMaxRuntimeSubentryFlow(ConfigSubentryFlow):
+    """Sub-entry flow: add or edit one entity + max run time (minutes)."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> config_entries.FlowResult:
-        """Manage the options - single boiler configuration."""
-        if user_input is not None:
-            # Build entity_max_runtime dict from user input
-            entity_max_runtime = {}
-            
-            entity_id = user_input.get("boiler_entity")
-            max_time = user_input.get("boiler_time", 0)
-            
-            # Check entity first - if empty, always remove settings
-            if entity_id is None or not isinstance(entity_id, str) or not entity_id.strip():
-                # Entity is empty - remove all boiler settings
-                entity_max_runtime = {}
-            elif max_time <= 0:
-                # Entity exists but time = 0 - also remove
-                entity_max_runtime = {}
-            else:
-                # Valid entity and time > 0 - save
-                entity_max_runtime[entity_id] = max_time
-            
-            # Preserve items and enabled state
-            current_options = self.config_entry.options
-            new_options = dict(current_options)
-            new_options[CONF_ENTITY_MAX_RUNTIME] = entity_max_runtime
-            
-            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data=new_options)
+    @staticmethod
+    def _make_title(entity_id: str, minutes: int) -> str:
+        return f"{entity_id} — {minutes} min"
 
-        # Get fresh entry data when showing form
-        entry = self.hass.config_entries.async_get_entry(self.config_entry.entry_id)
-        current_options = entry.options if entry else self.config_entry.options
-        
-        # Get current settings
-        entity_max_runtime = current_options.get(CONF_ENTITY_MAX_RUNTIME, {})
-        
-        # Get first boiler (we only support one now)
-        boiler_entity = None
-        boiler_time = 120
-        if entity_max_runtime:
-            boiler_entity = list(entity_max_runtime.keys())[0]
-            boiler_time = entity_max_runtime[boiler_entity]
-        
-        # Build schema with single boiler
-        schema_dict = {}
-        
-        # Use suggested_value instead of default to allow clearing
-        if boiler_entity:
-            schema_dict[vol.Optional("boiler_entity", description={"suggested_value": boiler_entity})] = EntitySelector(
-                EntitySelectorConfig(domain="switch")
-            )
-        else:
-            schema_dict[vol.Optional("boiler_entity")] = EntitySelector(
-                EntitySelectorConfig(domain="switch")
-            )
-        
-        schema_dict[vol.Optional("boiler_time", default=boiler_time, description={"suggested_value": boiler_time})] = NumberSelector(
-            NumberSelectorConfig(
-                min=0,
-                max=1440,
-                mode=NumberSelectorMode.BOX,
-                step=1,
-                unit_of_measurement="minutes"
-            )
+    def _make_schema(
+        self,
+        default_entity: str | None = None,
+        default_minutes: int = 30,
+    ) -> vol.Schema:
+        entity_key = (
+            vol.Required("entity_id", default=default_entity)
+            if default_entity
+            else vol.Required("entity_id")
         )
-        
-        data_schema = vol.Schema(schema_dict)
+        return vol.Schema(
+            {
+                entity_key: EntitySelector(
+                    EntitySelectorConfig(domain=ENTITY_MAX_RUNTIME_DOMAINS)
+                ),
+                vol.Required("max_minutes", default=default_minutes): NumberSelector(
+                    NumberSelectorConfig(
+                        min=1,
+                        max=1440,
+                        mode=NumberSelectorMode.BOX,
+                        step=1,
+                        unit_of_measurement="min",
+                    )
+                ),
+            }
+        )
 
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add a new entity + max run time."""
+        if user_input is not None:
+            entity_id = (user_input.get("entity_id") or "").strip()
+            try:
+                minutes = int(user_input["max_minutes"])
+            except (TypeError, ValueError, KeyError):
+                minutes = 0
+            if entity_id and 1 <= minutes <= 1440:
+                return self.async_create_entry(
+                    title=self._make_title(entity_id, minutes),
+                    data={"entity_id": entity_id, "max_minutes": minutes},
+                )
         return self.async_show_form(
-            step_id="init",
-            data_schema=data_schema,
+            step_id="user",
+            data_schema=self._make_schema(),
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Edit an existing entity + max run time sub-entry."""
+        subentry = self._get_reconfigure_subentry()
+        saved_entity = str(subentry.data.get("entity_id") or "")
+        saved_minutes = int(subentry.data.get("max_minutes", 30))
+
+        if user_input is not None:
+            entity_id = (user_input.get("entity_id") or "").strip()
+            try:
+                minutes = int(user_input["max_minutes"])
+            except (TypeError, ValueError, KeyError):
+                minutes = 0
+            if entity_id and 1 <= minutes <= 1440:
+                return self.async_update_and_abort(
+                    self._get_entry(),
+                    subentry,
+                    title=self._make_title(entity_id, minutes),
+                    data={"entity_id": entity_id, "max_minutes": minutes},
+                )
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=self._make_schema(
+                default_entity=saved_entity or None,
+                default_minutes=saved_minutes,
+            ),
         )

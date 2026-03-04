@@ -53,6 +53,7 @@ SERVICE_SET_ACTIVE_BUTTON: Final = "set_active_button"
 SERVICE_CLEAR_ACTIVE_BUTTON: Final = "clear_active_button"
 SERVICE_REGISTER_ENTITY_FOR_LAST_RUN: Final = "register_entity_for_last_run"
 SERVICE_ENABLE_ALL_SLOTS: Final = "enable_all_slots"
+SERVICE_SET_ENTITY_MAX_RUNTIME: Final = "set_entity_max_runtime"
 
 # Attributes
 ATTR_ENTRY_ID: Final = "entry_id"
@@ -71,3 +72,14 @@ ATTR_ACTIVE_ITEMS: Final = "active_items"
 
 # Platforms
 PLATFORMS: Final = ["switch", "sensor"]
+
+# Entity selector for "entity max run time": all domains the scheduler can control (on/off + max_runtime)
+ENTITY_MAX_RUNTIME_DOMAINS: Final = [
+    "switch",
+    "input_boolean",
+    "light",
+    "fan",
+    "cover",
+    "climate",
+    "water_heater",
+]
