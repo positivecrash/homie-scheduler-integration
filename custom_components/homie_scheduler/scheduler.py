@@ -414,19 +414,21 @@ class SchedulerCoordinator:
             # Restore button turn-off timers (run for / recirculation) from active_buttons
             self._restore_button_turn_off_timers()
             
-            # Check entities with max_runtime - if already ON, start monitoring
-            # _start_max_runtime_monitor skips if entity has active slot (slot controls turn-off)
-            def _start_monitors_for_on_entities() -> None:
+            # Check entities with max_runtime - if already ON, start monitoring (at_startup=True:
+            # do not skip for active slot, so we always enforce max_runtime after power loss/restart)
+            def _start_monitors_for_on_entities(at_startup: bool = True) -> None:
                 entity_max_runtime = self._get_entity_max_runtime()
                 for entity_id, max_minutes in entity_max_runtime.items():
                     if max_minutes > 0:
                         state = self.hass.states.get(entity_id)
                         if _entity_state_is_on(entity_id, state):
-                            self._start_max_runtime_monitor(entity_id)
+                            self._start_max_runtime_monitor(entity_id, at_startup=at_startup)
 
-            _start_monitors_for_on_entities()
-            # Also run after 5s: restore_state may apply after integration startup
-            async_call_later(self.hass, 5.0, lambda _: _start_monitors_for_on_entities())
+            _start_monitors_for_on_entities(at_startup=True)
+            # Retry after 5s: restore_state may apply after integration startup
+            async_call_later(self.hass, 5.0, lambda _: _start_monitors_for_on_entities(at_startup=True))
+            # Retry after 30s: late state restore (e.g. slow device)
+            async_call_later(self.hass, 30.0, lambda _: _start_monitors_for_on_entities(at_startup=True))
             # Latest activity: one refresh from history at start only
             await self._async_refresh_last_runs_from_history()
         except Exception as e:
@@ -479,6 +481,21 @@ class SchedulerCoordinator:
         old_was_on = _entity_state_is_on(entity_id, old_state) if old_state else False
         new_is_on = _entity_state_is_on(entity_id, new_state)
 
+        # After unknown/unavailable: if device reports 'off', send turn_off once to ensure relay is really off
+        old_was_unknown = (
+            old_state is not None
+            and str(getattr(old_state, "state", "") or "").lower() in ("unknown", "unavailable")
+        )
+        new_state_str = str(getattr(new_state, "state", "") or "").lower()
+        if old_was_unknown and new_state_str == "off":
+            domain = entity_id.split(".")[0] if "." in entity_id else "switch"
+            if self.hass.services.has_service(domain, "turn_off"):
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        domain, "turn_off", {"entity_id": entity_id}, blocking=False
+                    )
+                )
+
         # Entity turned on (including when old_state was None — e.g. after HA restart or first event)
         if new_is_on and not old_was_on:
             entity_state = self._entity_states.get(entity_id, {})
@@ -486,6 +503,14 @@ class SchedulerCoordinator:
                 entity_state["blocked_until"] = None
             self._entity_states[entity_id] = entity_state
             self._start_max_runtime_monitor(entity_id)
+        elif new_is_on:
+            # Entity is on but we may have no timer (e.g. state restored after our 30s retry)
+            if (
+                entity_id not in self._max_runtime_turn_off_times
+                and entity_id not in self._max_runtime_timers
+                and self._get_entity_max_runtime().get(entity_id, 0) > 0
+            ):
+                self._start_max_runtime_monitor(entity_id, at_startup=True)
         
         if not new_is_on:
             self._stop_max_runtime_monitor(entity_id)
@@ -528,6 +553,10 @@ class SchedulerCoordinator:
                 pass
             if entity_id in self._entity_states:
                 self._entity_states[entity_id]["scheduler_controlled_on"] = False
+
+        # On any state_changed for this entity, run reschedule/enforce so _max_runtime_turn_off_times
+        # and per-entity timer are updated (e.g. after unknown→on we need enforce to set turn-off time).
+        self.hass.async_create_task(self._async_reschedule_entity(entity_id))
 
     async def _async_reschedule(self, skip_enforce: bool = False) -> None:
         """Recalculate and reschedule next transition.
@@ -867,6 +896,7 @@ class SchedulerCoordinator:
                         _LOGGER.error("Failed to call service_start for %s: %s", entity_id, e)
                 else:
                     # Already on — for climate, if mode differs from slot, apply slot mode/temperature
+                    # Use run_start = when entity actually turned on (last_changed) so max_runtime accounts for overlap
                     if _climate_slot_mode_differs_from_current(entity_id, switch_state, service_start):
                         try:
                             service_name = service_start["name"]
@@ -890,11 +920,16 @@ class SchedulerCoordinator:
                                     blocking=True,
                                 )
                             now = dt_util.now()
+                            run_start = (
+                                dt_util.as_utc(switch_state.last_changed)
+                                if (switch_state and getattr(switch_state, "last_changed", None))
+                                else now
+                            )
                             winning_item_now = self._get_winning_active_item(items, now)
                             if winning_item_now:
                                 slot_end = self._calculate_item_end(winning_item_now, now)
                                 if slot_end:
-                                    actual_end = self._effective_turn_off_time(entity_id, slot_end, entity_start=now)
+                                    actual_end = self._effective_turn_off_time(entity_id, slot_end, entity_start=run_start)
                                     turn_off_time_ms = int(actual_end.timestamp() * 1000)
                                     self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
                                     self._notify_listeners()
@@ -902,7 +937,7 @@ class SchedulerCoordinator:
                                     entity_max_runtime = self._get_entity_max_runtime()
                                     max_minutes = entity_max_runtime.get(entity_id, 0)
                                     if max_minutes > 0:
-                                        actual_end = now + timedelta(minutes=max_minutes)
+                                        actual_end = run_start + timedelta(minutes=max_minutes)
                                         self._max_runtime_turn_off_times[entity_id] = int(actual_end.timestamp() * 1000)
                                         self._notify_listeners()
                         except Exception as e:
@@ -1502,17 +1537,18 @@ class SchedulerCoordinator:
         ]
         return len(self._get_active_items_for_entity(items_for_entity, now)) > 0
 
-    def _start_max_runtime_monitor(self, entity_id: str) -> None:
+    def _start_max_runtime_monitor(self, entity_id: str, *, at_startup: bool = False) -> None:
         """Start monitoring max runtime for entity.
 
-        Skips if entity has active slot — slot controls turn-off, don't overwrite.
+        Skips if entity has active slot (slot controls turn-off) — unless at_startup:
+        at startup we don't know who turned the entity on, so always enforce max_runtime.
         """
         # Get max_runtime from sub-entries or options
         entity_max_runtime = self._get_entity_max_runtime()
         max_minutes = entity_max_runtime.get(entity_id)
         if not max_minutes or max_minutes <= 0:
             return  # No max runtime configured
-        if self._entity_has_active_slot(entity_id):
+        if not at_startup and self._entity_has_active_slot(entity_id):
             return
 
         # Validate entity
@@ -1561,6 +1597,16 @@ class SchedulerCoordinator:
             auto_shutoff
         )
         turn_off_time_ms = int((time.time() + (remaining_minutes * 60)) * 1000)
+        # If run was started by button (e.g. "Run for 20 min"), show button's end time, not max_runtime
+        active_buttons = self.entry.options.get(STORAGE_ACTIVE_BUTTONS, {}) or {}
+        btn_data = active_buttons.get(entity_id) if isinstance(active_buttons, dict) else None
+        if isinstance(btn_data, dict) and btn_data.get("timer_end") is not None:
+            try:
+                btn_end_ms = int(btn_data["timer_end"])
+                if btn_end_ms > 0 and btn_end_ms < turn_off_time_ms:
+                    turn_off_time_ms = btn_end_ms
+            except (TypeError, ValueError):
+                pass
         self._max_runtime_turn_off_times[entity_id] = turn_off_time_ms
 
         # Notify bridge sensor immediately so cards can update
@@ -1654,8 +1700,9 @@ class SchedulerCoordinator:
                 te_ms = int(timer_end)
             except (TypeError, ValueError):
                 continue
+            # Always schedule (when te_ms <= now_ms, delay is 0 so turn_off runs immediately after restart)
+            self._schedule_button_turn_off(eid, te_ms)
             if te_ms > now_ms:
-                self._schedule_button_turn_off(eid, te_ms)
                 # Sync bridge display: override max_runtime_turn_off_times so "will be off"
                 # shows the button's duration, not the entity-level max_runtime.
                 self._max_runtime_turn_off_times[eid] = te_ms

@@ -67,6 +67,20 @@ In the integration **config screen** (Options) you can set **entity max run time
 
 **Supported domains** (schedule control and max run time): `switch`, `input_boolean`, `light`, `fan`, `cover`, `climate`, `water_heater`.
 
+### Fault tolerance
+
+The integration includes several mechanisms to recover gracefully from Home Assistant restarts, power outages, and temporary device unavailability.
+
+**Startup recovery for max run time.** When the integration starts, it checks every entity that has a max run time configured. If the entity is already on, a max-runtime monitor is started immediately using `state.last_changed` as the run start so that elapsed time is accounted for. Because some entities may not have their correct state right away (e.g. Zigbee devices reconnecting), the check is retried after 5 seconds and again after 30 seconds.
+
+**State change triggers reschedule.** On every `state_changed` event for a tracked entity, the integration runs a full reschedule and enforce cycle for that entity (`_async_reschedule_entity`). This ensures that `max_runtime_turn_off_times` and per-entity timers are always up to date — for example, when an entity transitions from `unknown` to `on` after a network reconnect, the enforce step immediately sets the correct turn-off time so cards can display "will be off in …".
+
+**Unknown → off: confirm turn-off on the device.** When a device goes through `unknown` or `unavailable` (e.g. Zigbee bridge reconnect) and then reports `off`, the integration sends an explicit `turn_off` command to the device as a safety measure. This guards against stale state where the device might physically still be on but the integration received `off` as the default power-on state.
+
+**Expired button timers after downtime.** The "RUN FOR" button sets a server-side turn-off timer that is persisted in `active_buttons`. When the integration restarts, `_restore_button_turn_off_timers` reschedules all button timers. If a timer has already expired during downtime (e.g. HA was off for longer than the button duration), the turn-off fires immediately with zero delay so the device is switched off as soon as the integration is back.
+
+**Button duration preserved in display.** When the max-runtime monitor starts for an entity that was turned on via a button (e.g. "Run for 20 min"), the integration checks `active_buttons` and writes the earlier of the two deadlines (button end vs. max run time) into `max_runtime_turn_off_times`. This prevents the card from briefly showing the button duration and then switching to the longer max run time.
+
 ## License
 
 MIT – see [LICENSE](LICENSE).

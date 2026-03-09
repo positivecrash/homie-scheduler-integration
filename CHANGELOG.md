@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0]
+
+### Fault tolerance
+
+- **State change reschedule:** On every `state_changed` for a tracked entity, the integration runs a full reschedule and enforce cycle for that entity. This ensures `max_runtime_turn_off_times` and per-entity timers are updated immediately (e.g. when an entity goes from `unknown` to `on` after a reconnect, the card shows "will be off in …" and max run time is enforced).
+- **Unknown → off:** When a device reports `off` after being `unknown` or `unavailable`, the integration sends an explicit `turn_off` once so the relay is confirmed off.
+- **Expired button timers after downtime:** When the integration restarts, button turn-off timers from "RUN FOR" are restored. If a timer already expired while HA was down, turn-off is scheduled with zero delay so the device is switched off as soon as the integration is back.
+- **Button duration in display:** When the max-runtime monitor starts for an entity that was turned on via a button (e.g. "Run for 20 min"), the integration uses the earlier of button end time and max run time for `max_runtime_turn_off_times`, so the card shows the button duration (e.g. "Will be off in 20 min") instead of switching to max run time (e.g. 1 h).
+
+### Compatibility
+
+- Tested with Homie Scheduler Cards 1.1.2.
+
 ## [1.0.9]
 
 ### Changed
